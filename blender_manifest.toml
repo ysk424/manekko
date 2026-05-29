@@ -1,0 +1,41 @@
+schema_version = "1.0.0"
+
+id = "manekko"
+version = "0.0.1"
+name = "Manekko"
+tagline = "VIVE Tracker full-body mocap → CC character via mink IK"
+maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"
+type = "add-on"
+
+blender_version_min = "5.1.0"
+
+license = ["SPDX:Apache-2.0"]
+
+tags = ["Animation", "Rigging"]
+
+platforms = ["windows-x64"]
+
+[build]
+paths = [
+    "__init__.py",
+    "ui.py",
+    "src",
+]
+
+# numpy is intentionally NOT bundled — Blender 5.1 ships numpy 2.3.4 (numpy2 ABI),
+# compatible with the mujoco/scipy wheels. Run scripts/fetch_wheels.ps1 to populate ./wheels/.
+wheels = [
+    "./wheels/mink-1.1.1-cp313-cp313-win_amd64.whl",
+    "./wheels/mujoco-3.9.0-cp313-cp313-win_amd64.whl",
+    "./wheels/openvr-2.12.1401-py3-none-any.whl",
+    "./wheels/qpsolvers-4.12.0-py3-none-any.whl",
+    "./wheels/daqp-0.8.7-cp313-cp313-win_amd64.whl",
+    "./wheels/scipy-1.17.1-cp313-cp313-win_amd64.whl",
+    "./wheels/absl_py-2.4.0-py3-none-any.whl",
+    "./wheels/etils-1.14.0-py3-none-any.whl",
+    "./wheels/fsspec-2026.4.0-py3-none-any.whl",
+    "./wheels/glfw-2.10.0-py2.py27.py3.py30.py31.py32.py33.py34.py35.py36.py37.py38.py39.py310.py311.py312.py313.py314-none-win_amd64.whl",
+    "./wheels/pyopengl-3.1.10-py3-none-any.whl",
+    "./wheels/typing_extensions-4.15.0-py3-none-any.whl",
+    "./wheels/zipp-4.1.0-py3-none-any.whl",
+]

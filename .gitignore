@@ -1,0 +1,12 @@
+# Bundled wheels are fetched locally via scripts/fetch_wheels.ps1 (large; not committed)
+/wheels/
+
+# Build output
+/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Blender
+*.blend1
