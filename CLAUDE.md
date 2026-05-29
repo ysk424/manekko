@@ -20,11 +20,19 @@ IKコアのパイプライン **トラッカー位置 → mink solve → CCボ�
 
 1. `src/rig.py` — CC_Base アーマチュアから縮約 MuJoCo MJCF を生成。
    A-pose を **誤差1e-6m** で再現。21ボディ（free root + ball×13 + hinge×4 + weld×3）、nq=63/nv=49。
+   **各ボディフレームを対応ボーンのローカル rest フレームに整列**（B案・2026-05-30）。これにより関節 qpos が
+   そのまま「ボーン局所の rest からの変位」になり、apply は quat→Euler の自明変換で済む。
    body⇔bone対応・tracker役割⇔body対応・rest world行列を返す。
 2. `src/solver.py` — mink Configuration + 10点 **position-only** FrameTask + A-pose PostureTask、daqp。
    安定（rest残差0）、到達可能ポーズを ~7mm で復元、**1.7ms/4反復**。
-3. `src/apply.py` — solve結果の MuJoCo body world変換を CC_Base pose bone に適用（誤差**5μm**）。
-   絶対matrix・root-first・ボーン毎 view_layer.update。現状 **~25ms**（24fps運用なので許容、後で最適化）。
+3. `src/apply.py` — **角度のみリターゲット**（2026-05-30 にB案で全面書き換え）。ボーンに渡すのは
+   **rest(A-pose)からのFK関節角だけ**（ボール=quat→Euler、ヒンジ=軸角→Euler、weldはbasis単位行列にreset）。
+   **ルートのみ例外でグローバル位置＋角度**（スケールは明示除去）。ワールド行列/位置/スケールを非ルートボーンに
+   焼くのは禁止（演者とキャラの体格差のため位置は転写不可、角度だけが体格非依存で移る）。
+   検証済（2026-05-30）: 角度のみで全身ポーズを **8μm** で再構成、全ボーン scale=1.0、rest再現8μm。
+   per-bone update を廃し最後に1回 view_layer.update（旧版の25ms問題も解消）。
+   ※ 旧版（ワールド行列をボーンに焼く方式）はルートに100倍スケールが漏れるバグがあった。旧「5μm検証」は
+   位置のみのチェックでスケール汚染を見逃していた。
 4. `src/openvr_reader.py` — openvr を別スレッドでポーリング（bpy 非タッチ）。`TrackerReader`(start/stop/
    snapshot/device_table/assign)、座標変換 `svr_to_blender`、`Calibration`(A-pose位置オフセット)。
    **実機検証済**（2026-05-30）: HMD+ライトハウス4台を valid pose で列挙、軸入替 `(x,-z,y)` を天井
@@ -94,6 +102,10 @@ model = mujoco.MjModel.from_xml_string(rm.mjcf)
 
 - **FrameTask は位置のみ**（orientation_cost=0）。理由: 角度/回転情報は地雷にハマりやすい（ユーザー方針）。
   姿勢は PostureTask の A-pose 寄せで決める。後で 6DOF に拡張可能。
+- **キャラのボーンに渡すのはFK関節角だけ（ルートのみグローバル位置＋角度を例外で渡す）**（ユーザー方針・B案）。
+  理由: モーキャップ演者とキャラは体格が違うので**ワールド位置は転写できない**。関節角（rest からの変位）だけが
+  体格非依存で正しく移る。位置情報の役割は hip トラッカー→ルートのみ。ワールド行列/スケールをボーンに焼くの禁止。
+  実装: `rig.py` がボディをボーン局所フレームに整列 → `apply.py` は qpos を Euler 変位として渡すだけ。
 - **24fps で十分**（動画は Cycles が遅く 24fps 制作）。apply の25msは許容。速度は完成後に
   一部を外部 C++ に出す案あり（後回し）。
 - **commit/push は節目ごとに自動**（動作検証が通るたび push）。

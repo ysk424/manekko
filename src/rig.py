@@ -104,9 +104,12 @@ def build_mjcf(arm) -> RigModel:
 
     body_to_bone: dict[str, str] = {}
     rest_world: dict[str, mathutils.Matrix] = {}
+    rest_rot: dict[str, mathutils.Quaternion] = {}
     for bone, _, _ in CHAIN:
         body_to_bone[name_of[bone]] = bone
         rest_world[bone] = arm.matrix_world @ arm.data.bones[bone].matrix_local
+        # pure rotation (object scale removed by to_quaternion)
+        rest_rot[bone] = rest_world[bone].to_quaternion()
 
     def hinge_axis(bone: str) -> mathutils.Vector:
         """Flexion axis for elbow/knee = perpendicular to the two segment dirs."""
@@ -119,14 +122,26 @@ def build_mjcf(arm) -> RigModel:
             axis = d_self.cross(mathutils.Vector((0.0, 0.0, 1.0)))
         return axis.normalized()
 
+    identity = mathutils.Quaternion()  # (1,0,0,0)
+
     def emit_body(bone: str, parent: str | None) -> ET.Element:
         bname = name_of[bone]
         head_w = _world_head(arm, bone)
+        Rb = rest_rot[bone]
+        Rb_inv = Rb.inverted()
+        Rpar = rest_rot[parent] if parent is not None else identity
+        Rpar_inv = Rpar.inverted()
+
+        # body pos is expressed in the PARENT body frame (= parent bone frame);
+        # body quat is the child bone's rest rotation RELATIVE to the parent.
+        # At rest (identity joints) this reproduces each bone's world frame, so
+        # the joint qpos becomes exactly the bone-local displacement from rest.
         if parent is None:
             pos = head_w
         else:
-            pos = head_w - _world_head(arm, parent)
-        body = ET.Element("body", name=bname, pos=_v(pos))
+            pos = Rpar_inv @ (head_w - _world_head(arm, parent))
+        quat = Rpar_inv @ Rb
+        body = ET.Element("body", name=bname, pos=_v(pos), quat=_q(quat))
 
         jt = joint_of[bone]
         if jt == "free":
@@ -134,15 +149,14 @@ def build_mjcf(arm) -> RigModel:
         elif jt == "ball":
             ET.SubElement(body, "joint", name=bname, type="ball", damping="1")
         elif jt == "hinge":
-            ax = hinge_axis(bone)
+            ax_local = Rb_inv @ hinge_axis(bone)   # flexion axis in bone frame
             ET.SubElement(body, "joint", name=bname, type="hinge",
-                          axis=_v(ax), damping="1", limited="false")
+                          axis=_v(ax_local), damping="1", limited="false")
         elif jt == "weld":
             pass  # no joint: rigid offset from parent
 
-        # capsule geom (gives inertia; also a visual). fromto in body frame
-        # (world-aligned) = tail - head.
-        seg = _world_tail(arm, bone) - head_w
+        # capsule geom (inertia + visual). fromto in this body's (bone) frame.
+        seg = Rb_inv @ (_world_tail(arm, bone) - head_w)
         if seg.length > 1e-3:
             ET.SubElement(body, "geom", type="capsule",
                           fromto=f"0 0 0 {seg.x:.5f} {seg.y:.5f} {seg.z:.5f}",
@@ -179,3 +193,8 @@ def build_mjcf(arm) -> RigModel:
 
 def _v(vec) -> str:
     return f"{vec[0]:.6f} {vec[1]:.6f} {vec[2]:.6f}"
+
+
+def _q(quat) -> str:
+    # MuJoCo quaternion order is (w, x, y, z), same as mathutils.Quaternion.
+    return f"{quat.w:.6f} {quat.x:.6f} {quat.y:.6f} {quat.z:.6f}"

@@ -1,18 +1,27 @@
-"""Apply a solved MuJoCo configuration back onto the Blender CC_Base armature.
+"""Apply a solved MuJoCo configuration onto the Blender CC_Base armature.
 
-The MJCF is built in Blender WORLD meters with body frames world-axis-aligned
-at the A-pose rest (see rig.py). So at rest each MuJoCo body world rotation is
-identity, and at runtime body world rotation R(t) IS the world-space delta the
-corresponding bone must undergo:
+**Retargeting principle (do not regress):** the only data pushed onto the
+character's bones is *FK joint rotation* — each joint's displacement from the
+rest (A) pose — except the root, which additionally receives a global position.
+World matrices / positions / scales are never baked onto non-root bones,
+because the mocap performer and the character differ in size: only joint
+angles transfer cleanly across body proportions.
 
-    bone_world(t) = [ R(t) @ rest_world_rot | xpos(t) ]
+This works because ``rig.py`` builds the MuJoCo model so that
 
-pose_bone.matrix is in armature/object space, so we map back through
-arm.matrix_world.inverted() (which also rescales meters→object units).
-Uniform object scale (0.01) leaves rotation unaffected.
+* the rest configuration is all-identity joints (rest qpos = identity), and
+* each body frame coincides with its Blender bone's local rest frame.
 
-Bones are set in hierarchy (root-first) order with a view-layer update so each
-child sees its parent's updated pose.
+So a joint's ``qpos`` *is* the bone-local rotation away from rest:
+
+* ball joint  -> a quaternion in the bone frame      -> ``rotation_euler``
+* hinge joint -> an angle about the bone-frame axis  -> ``rotation_euler``
+* free root   -> world pos + world quat              -> root bone global pose
+* weld        -> no DOF                               -> stays at rest
+
+Because every non-root bone gets only a *local* rotation (relative to its
+parent's rest), the values are independent of one another, so no per-bone
+``view_layer.update`` is needed — one update at the end suffices.
 """
 from __future__ import annotations
 
@@ -20,46 +29,57 @@ import mathutils
 import mujoco
 
 
-def _world_rot(mat4: mathutils.Matrix) -> mathutils.Matrix:
-    """Pure 3x3 rotation (scale removed) as a 4x4."""
-    return mat4.to_quaternion().to_matrix().to_4x4()
-
-
 def apply_pose(arm, rm, configuration, *, view_layer=None) -> None:
-    """Set CC_Base pose bones from the solved MuJoCo configuration.
-
-    ``pose_bone.matrix`` is absolute (armature space), so values are computed
-    purely from MuJoCo — skipped intermediate bones (e.g. NeckTwist02) simply
-    stay at rest without introducing error. But Blender derives each bone's
-    ``matrix_basis`` from its *current* parent pose, so we must finalize a
-    parent before its children: set in root-first order, updating after each.
-    """
     import bpy
     if view_layer is None:
         view_layer = bpy.context.view_layer
 
     model = configuration.model
     data = configuration.data
-    mw = arm.matrix_world
-    mw_inv = mw.inverted()
+    qpos = data.qpos
+    mw_inv = arm.matrix_world.inverted()
     pbones = arm.pose.bones
 
-    for body in rm.bodies:  # CHAIN order = root-first
+    for body in rm.bodies:
         bone = rm.body_to_bone[body]
+        pb = pbones[bone]
         bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
 
-        xpos = data.xpos[bid]
-        xmat = data.xmat[bid]  # flat 9
-        Rb = mathutils.Matrix((
-            (xmat[0], xmat[1], xmat[2]),
-            (xmat[3], xmat[4], xmat[5]),
-            (xmat[6], xmat[7], xmat[8]),
-        )).to_4x4()
+        if model.body_jntnum[bid] == 0:
+            # weld: no DOF — follows its parent rigidly, so its local
+            # displacement from rest is zero. Reset the basis (clears any stale
+            # pose) rather than skipping; a leftover rotation here would
+            # otherwise propagate down the whole chain (e.g. clavicle -> arm).
+            pb.matrix_basis = mathutils.Matrix.Identity(4)
+            continue
 
-        rest_rot = _world_rot(mw @ arm.data.bones[bone].matrix_local)
-        world = mathutils.Matrix.Translation(
-            (xpos[0], xpos[1], xpos[2])
-        ) @ (Rb @ rest_rot)
+        jid = int(model.body_jntadr[bid])
+        jtype = model.jnt_type[jid]
+        adr = int(model.jnt_qposadr[jid])
 
-        pbones[bone].matrix = mw_inv @ world
-        view_layer.update()  # finalize this bone before its children are set
+        if jtype == mujoco.mjtJoint.mjJNT_FREE:
+            # Root: the one allowed position transfer. Set the bone's GLOBAL
+            # pose (position + orientation). Scale is explicitly stripped so
+            # the armature object's inverse scale never contaminates the bone.
+            pos = mathutils.Vector((qpos[adr], qpos[adr + 1], qpos[adr + 2]))
+            quat = mathutils.Quaternion(
+                (qpos[adr + 3], qpos[adr + 4], qpos[adr + 5], qpos[adr + 6]))
+            world = mathutils.Matrix.Translation(pos) @ quat.to_matrix().to_4x4()
+            loc, rot, _ = (mw_inv @ world).decompose()
+            # set the absolute armature-space pose (root has no parent bone);
+            # scale forced to 1 so the object's inverse scale can't leak in.
+            pb.matrix = mathutils.Matrix.LocRotScale(
+                loc, rot, mathutils.Vector((1.0, 1.0, 1.0)))
+        elif jtype == mujoco.mjtJoint.mjJNT_BALL:
+            q = mathutils.Quaternion(
+                (qpos[adr], qpos[adr + 1], qpos[adr + 2], qpos[adr + 3]))
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = q.to_euler("XYZ")
+        elif jtype == mujoco.mjtJoint.mjJNT_HINGE:
+            angle = float(qpos[adr])
+            axis = mathutils.Vector((
+                model.jnt_axis[jid][0], model.jnt_axis[jid][1], model.jnt_axis[jid][2]))
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = mathutils.Quaternion(axis, angle).to_euler("XYZ")
+
+    view_layer.update()
