@@ -38,14 +38,56 @@ ROLES: tuple[str, ...] = (
 # assigned at runtime via TrackerReader.assign() / the N-panel. Serials are the
 # Prop_SerialNumber_String values reported by OpenVR.
 SERIAL_TO_ROLE: dict[str, str] = {
-    # "LHR-XXXXXXXX": "hip",
+    # hands are the two VIVE controllers (they also carry the trigger button
+    # used to define the A-rest pose / start-stop recording); the other 8 are
+    # VIVE Tracker 3.0. Confirmed by floor line-up 2026-05-30.
+    "LHR-9EFF8645": "hand_r",   # R controller
+    "LHR-0B253252": "hand_l",   # L controller
+    "LHR-CC5F5D2C": "head",
+    "LHR-15E5788A": "hip",      # drives the root bone's global position
+    "LHR-4CEBC3D1": "elbow_r",
+    "LHR-8CBC92B3": "elbow_l",
+    "LHR-31597DDE": "knee_r",
+    "LHR-4BDF9009": "knee_l",
+    "LHR-60481EF9": "foot_r",
+    "LHR-9E4926DA": "foot_l",
 }
+
+# The controller whose trigger would define the A-rest pose / toggle recording.
+# NOTE (2026-05-30): the legacy IVRSystem.getControllerState returns NO live
+# button data here (packet number never advances) even though the controller is
+# awake — modern SteamVR routes input through the action-based IVRInput API. So
+# the trigger is NOT usable via the legacy path; switching to IVRInput is
+# deferred. Current recording scheme uses BEEPS instead of the trigger:
+#   start -> beep1 -> 5 s (performer takes A-pose) -> beep2 (calibrate + record).
+TRIGGER_SERIALS: tuple[str, ...] = ("LHR-9EFF8645", "LHR-0B253252")
 
 
 def svr_to_blender(p) -> np.ndarray:
-    """SteamVR (Y-up, m) position -> Blender (Z-up, m). Scale 1, axis swap."""
+    """SteamVR (Y-up, m) position -> Blender (Z-up, m). Scale 1, pure axis swap."""
     x, y, z = float(p[0]), float(p[1]), float(p[2])
     return np.array((x, -z, y), dtype=float)
+
+
+# Front alignment: the capture room has the computer screen at world -X and the
+# performer faces the screen, so "forward" = world -X must map to the character
+# front (Blender -Y). svr_to_blender alone maps world -X -> Blender -X (90 deg
+# off), so a fixed +90 deg yaw about Z is applied afterwards. Net combined map:
+# SteamVR (x, y, z) -> Blender (z, x, y). No mirror (verified). Live-verified
+# 2026-05-30: forward->-Y, performer-left->+X both correct.
+FRONT_YAW_DEG = 90.0
+
+
+def world_to_blender(p) -> np.ndarray:
+    """SteamVR world position -> front-aligned Blender position (screen -X = front -Y).
+
+    Equivalent to svr_to_blender() followed by a +90 deg yaw about Z. Apply this
+    consistently to both the calibration reference and live positions (the delta
+    is what drives the character). Assumes the performer faces the screen (-X);
+    if the room layout changes, derive the yaw from the hip tracker heading.
+    """
+    x, y, z = float(p[0]), float(p[1]), float(p[2])
+    return np.array((z, x, y), dtype=float)
 
 
 def _mat34_pos(m) -> tuple[float, float, float]:

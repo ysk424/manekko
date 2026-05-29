@@ -47,10 +47,14 @@ IKコアのパイプライン **トラッカー位置 → mink solve → CCボ�
 残るは A-pose キャリブレーションの結線（`Calibration.from_apose` に rig の rest body 位置を渡す）。
 これは rest 位置取得が要るので task#3 のライブループに統合する。
 
-**task #3（本番統合）**
-- ライブ駆動 modal operator（`wm.event_timer`, main thread で snapshot→solve→apply）。
-- `apply` の25ms最適化（matrix_basis直接計算 or update回数削減）。**24fpsでよいので急がない**。
-- Action へキー提録（録画ボタン）。N-panel UI（Start/Stop/Calibrate/Record）。
+**task #3（本番統合）** — ★実機検証が進行中。詳細は **`docs/live_driving_notes.md`**（必読）。
+- **ライブは modal operator 必須**（`wm.event_timer`）。ブロッキングループは画面に提示されない（検証済）。
+  hip→ルートの3人称追従を modal で**実機確認済み**（プロトタイプは notes に収録）。
+- 残：プロトタイプを本番化＝**全身IK**（10点 position 目標を mink へ）＋ `apply` で関節角適用、
+  ルートは `world_to_blender` 位置で駆動、beep2 で `Calibration` 結線。
+- **録画は beep 方式**（トリガー不可のため。後述）：start→beep1→5秒(Aポーズ)→beep2(キャリブ＆録画開始)、
+  停止はエクステンションのボタン。Action へキー提録。
+- N-panel UI（Start/Stop/Calibrate/Record）。`apply` 速度は24fpsで急がない。
 
 ### 開発ループ（重要・これで反復している）
 
@@ -108,6 +112,13 @@ model = mujoco.MjModel.from_xml_string(rm.mjcf)
   実装: `rig.py` がボディをボーン局所フレームに整列 → `apply.py` は qpos を Euler 変位として渡すだけ。
 - **24fps で十分**（動画は Cycles が遅く 24fps 制作）。apply の25msは許容。速度は完成後に
   一部を外部 C++ に出す案あり（後回し）。
+- **ライブ表示は modal operator 必須**（ブロッキングPythonループは画面に提示されない＝実機検証で確定）。
+- **手はコントローラ、トリガーはレガシーAPIで取得不可**（IVRInput必要・後回し）。よって**録画はトリガーでなく
+  beep方式**：start→beep1→5秒(Aポーズ)→beep2(キャリブ＆録画開始)、停止はエクステンションのボタン。
+- **正面合わせ＝固定+90°ヨー**。部屋は画面が world -X、演者は画面を向く＝正面 world -X をキャラ正面 Blender -Y に
+  合わせる。`svr_to_blender`(=(x,-z,y)) の後に +90°、合成で **SteamVR(x,y,z)→Blender(z,x,y)** = `world_to_blender`。
+  実機検証済（前=-Y, 左=+X）。**鏡映ではない**（3点歩行テストで vecX→vecY=+87°、ヨー単一で確定）。部屋配置が
+  変われば hip 向きからヨーを算出。
 - **commit/push は節目ごとに自動**（動作検証が通るたび push）。
 - **ハード運用**: SteamVR はスタンバイ↔プレイの違いのみ重要。トラッカーはライトハウス4台点灯＋装着で出る。
   HMDは基準で常時監視（トラッキングには非使用）。ユーザーがGUI/管理者PWSH/起動停止を操作。
@@ -128,10 +139,13 @@ model = mujoco.MjModel.from_xml_string(rm.mjcf)
 blender_manifest.toml  — Blender5.1拡張, wheels同梱リスト(numpy除外), id=manekko
 __init__.py            — register/unregister, manekko_mode enum (IDLE/LIVE/RECORD) ※まだ足場
 ui.py                  — N-panel "Manekko" ※まだ足場
-src/rig.py             — MJCF生成（検証済）
+src/rig.py             — MJCF生成（検証済, ボーン局所フレーム整列）
 src/solver.py          — mink ソルバ（検証済）
-src/apply.py           — ボーン適用（検証済）
+src/apply.py           — ボーン適用＝FK角のみ（検証済, B案）
+src/openvr_reader.py   — トラッカー取得/座標変換/Calibration。SERIAL_TO_ROLE確定, world_to_blender(+90°)
+src/live.py            — LiveDriver（snapshot→calibrate→solve→apply オーケストレーション）
 scripts/fetch_wheels.ps1 — wheel取得
 docs/mink_pitfalls.md  — 地雷集
+docs/live_driving_notes.md — ★ライブ/modal/座標/トリガーの実機検証メモ＋検証済みプロトタイプ（task#3前に必読）
 wheels/                — 同梱wheel（.gitignore, ローカルのみ）
 ```
