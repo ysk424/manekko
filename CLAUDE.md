@@ -25,18 +25,19 @@ IKコアのパイプライン **トラッカー位置 → mink solve → CCボ�
    安定（rest残差0）、到達可能ポーズを ~7mm で復元、**1.7ms/4反復**。
 3. `src/apply.py` — solve結果の MuJoCo body world変換を CC_Base pose bone に適用（誤差**5μm**）。
    絶対matrix・root-first・ボーン毎 view_layer.update。現状 **~25ms**（24fps運用なので許容、後で最適化）。
+4. `src/openvr_reader.py` — openvr を別スレッドでポーリング（bpy 非タッチ）。`TrackerReader`(start/stop/
+   snapshot/device_table/assign)、座標変換 `svr_to_blender`、`Calibration`(A-pose位置オフセット)。
+   **実機検証済**（2026-05-30）: HMD+ライトハウス4台を valid pose で列挙、軸入替 `(x,-z,y)` を天井
+   ライトハウス(高さ≈2.1m→Blender Z≈2.1m)で裏取り、assign→snapshot フルパス・stop クリーン。
 
 → 当初の技術リスク（mink成立性・依存・OpenVR接続・座標/単位・モデル生成・可解性・Blender反映）は**全消化**。
 残りは既知技術の組み立て。
 
 ### 次にやること（優先順）
 
-**task #2 の残り（ハード不要・合成データで進められる）**
-- `src/openvr_reader.py`: openvr で別スレッドでポーズ取得（bpy に触れない）。デバイス列挙は確認済み
-  （今は HMD のみ見える。トラッカーはライトハウス点灯＋装着で出る）。シリアル⇔役割の割当（一部シリアル既知）。
-- 座標変換: SteamVR(Y-up, m) ↔ Blender(Z-up, m)。**両方メートルなのでスケール1**、軸入替のみ。
-- A-pose キャリブレーション: ユーザーがAポーズで静止 → 各トラッカー姿勢と対応 body 原点の
-  オフセットを記録 → 以後ターゲットに適用。**位置のみ**なので回転オフセットは不要（角度は地雷、後述）。
+**task #2 の残り** — リーダー/座標変換/Calibration は**完了・実機検証済**。
+残るは A-pose キャリブレーションの結線（`Calibration.from_apose` に rig の rest body 位置を渡す）。
+これは rest 位置取得が要るので task#3 のライブループに統合する。
 
 **task #3（本番統合）**
 - ライブ駆動 modal operator（`wm.event_timer`, main thread で snapshot→solve→apply）。
@@ -82,7 +83,7 @@ model = mujoco.MjModel.from_xml_string(rm.mjcf)
 | numpy | Blender 同梱 2.3.4（numpy2 ABI）を流用。**同梱しない** |
 | CCアーマチュア | オブジェクト名 `Toon Neutral_F`、標準 CC4 `CC_Base` 101ボーン |
 | 単位/座標 | armature scale=0.01、scene METRIC unit_scale=1 → `arm.matrix_world @ head_local` がワールド**メートル**。身長~1.59m。MJCFはワールドmで構築 |
-| OpenVR | `openvr.init(VRApplication_Background)` 成功。今は HMD のみ（pose無効=未トラッキング） |
+| OpenVR | `openvr.init(VRApplication_Background)` 成功。HMD=`LHR-CD5AF0FE`(VIVE Pro 2)。ライトハウス4台は class **5(DisplayRedirect)** を返す（VIVE基地局の癖／対象外）。トラッカー(class 3 GenericTracker)は点灯＋装着で出る。`getDeviceToAbsoluteTrackingPose(Standing)` 使用 |
 
 ### 10点トラッカー割当（IKタスク目標 / position-only）
 
