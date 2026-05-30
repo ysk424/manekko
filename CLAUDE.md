@@ -14,10 +14,17 @@ Blender 上の Character Creator（CC）キャラを全身IKで動かす Blender
 **リポ**: https://github.com/ysk424/manekko （private）/ branch `main`
 **締切**: 月曜。
 
-**🎉 2026-05-30: 全身ライブモーキャップ成立**（実機）。トラッカー位置→mink IK→FK角→CCキャラを
-リアルタイム駆動できている（`src/live_ops.py`）。途中で出た**ヌル空間ドリフト**（足踏みでねじれ累積）は
-`posture_cost` を 1e-2→**1e-1** に上げて解消（`solver.py` 既定値）。残：キャリブ微調整（後回し）、
-録画・UI、拡張への結線。詳細 `docs/live_driving_notes.md` / `docs/mink_pitfalls.md`。
+**🎉 2026-05-30: 拡張として完成・実機で「全部動く」**。トラッカー位置→mink IK→FK角→CCキャラを
+リアルタイム駆動。N-panel "Manekko"（`src/ops.py`+`ui.py`）に **Start/Stop・Record・Calibrate** の
+3ボタン。Record=押下→ビープ→5秒→ビープで**アクティブActionへキー提録**しながらフレーム送り。
+Calibrate=押下→5秒→Aポーズ取得を**ユーザCONFIGにJSON保存**（`src/calibration_io.py`、Start時に自動読込）。
+ヌル空間ドリフトは `posture_cost` 1e-2→**1e-1** で解消（`solver.py`既定値）。トリガー検出は断念
+（XInput/winmm/IVRInput いずれも背景アプリで不可）→録画はビープ＋ボタン方式。
+ビルド: `blender --command extension build --source-dir . --output-dir dist`（manifest は
+`paths_exclude_pattern` 方式。`paths=["src"]` だと wheels 抜けの2KB zip になる）。
+**次回の残作業：IK チューニング＋細かいキャリブ補正**（登録はキャラ/姿勢依存・前方合わせは固定+90°）。
+公開予定（参照実装として public 化、README は英語・Claude Code 製を明記）。
+詳細 `docs/live_driving_notes.md` / `docs/mink_pitfalls.md`。`src/live_ops.py` は `src/ops.py` に統合・削除。
 
 ### いま何ができているか（全部実機検証済み）
 
