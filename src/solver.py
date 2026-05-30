@@ -24,6 +24,14 @@ class ManekkoSolver:
         tracker_to_body: dict[str, str],
         *,
         position_cost: float = 1.0,
+        # Kept as a separate knob for the hands (VIVE controllers). In v0.0.4 we
+        # down-weighted them to 0.2 to stop the imperfect controller wrist target
+        # from pinning the elbow tracker. In v0.0.5 the elbow trackers were
+        # DROPPED from the IK (rig.TRACKER_TO_BONE), so the over-constraint is
+        # gone: the wrist now drives the whole arm and the PostureTask resolves
+        # the elbow swivel. So the hands go back to full weight for tight wrist
+        # tracking. Pure scalar weight, no angles.
+        hand_position_cost: float = 1.0,
         # 1e-1 (not 1e-2): position-only differential IK leaves the body's
         # twist/redundant DOFs unconstrained, so velocity integration drifts
         # (path-dependent null-space wind-up — cyclic motion like marching
@@ -42,12 +50,14 @@ class ManekkoSolver:
         self.configuration = mink.Configuration(model)
         self.configuration.update(model.qpos0)
 
+        hand_roles = ("hand_l", "hand_r")
         self.frame_tasks: dict[str, mink.FrameTask] = {}
         for role, body in tracker_to_body.items():
+            pc = hand_position_cost if role in hand_roles else position_cost
             t = mink.FrameTask(
                 frame_name=body,
                 frame_type="body",
-                position_cost=position_cost,
+                position_cost=pc,
                 orientation_cost=0.0,   # position-only (v1)
                 lm_damping=1.0,
             )

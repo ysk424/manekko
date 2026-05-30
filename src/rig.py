@@ -57,8 +57,14 @@ TRACKER_TO_BONE: dict[str, str] = {
     "hand_r":  "CC_Base_R_Hand",
     "foot_l":  "CC_Base_L_Foot",
     "foot_r":  "CC_Base_R_Foot",
-    "elbow_l": "CC_Base_L_Forearm",
-    "elbow_r": "CC_Base_R_Forearm",
+    # elbow trackers DROPPED from the IK (v0.0.5, 2026-05-31). The arm is over-
+    # constrained (Upperarm ball 3 + Forearm hinge 1 = 4 DOF vs elbow 3 + wrist 3
+    # = 6); the elbow + the imperfect controller wrist target fought and pinned
+    # the elbow. We let the wrist (hand) drive the arm and the PostureTask resolve
+    # the elbow swivel toward the A-pose. The elbow trackers are still read by
+    # openvr_reader (just not targeted) so re-enabling later = uncomment these:
+    # "elbow_l": "CC_Base_L_Forearm",
+    # "elbow_r": "CC_Base_R_Forearm",
     "knee_l":  "CC_Base_L_Calf",
     "knee_r":  "CC_Base_R_Calf",
 }
