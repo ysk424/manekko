@@ -101,6 +101,11 @@ class LiveDriver:
         _apply.apply_pose(self.arm, self.rm, self.solver.configuration)
         return True
 
+    def apply_rest(self):
+        """Reset the solver to the rest (A) pose and apply it to the bones."""
+        self.solver.reset_to_rest()
+        _apply.apply_pose(self.arm, self.rm, self.solver.configuration)
+
     # -- lifecycle ------------------------------------------------------
     def start_reader(self):
         self.reader.start()

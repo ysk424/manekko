@@ -132,6 +132,29 @@ Notes: root translation uses the same scale-stripped `pb.matrix` path as
 `apply.py` (decompose → `LocRotScale(loc, rot, 1)`) so the armature's 0.01 object
 scale never leaks onto the root. ESC resets to rest and shuts OpenVR down.
 
+## Full-body live operator — VALIDATED → `src/live_ops.py` (2026-05-30 PM)
+
+`MANEKKO_OT_live` drives the **full body via `LiveDriver`** (mink IK → FK-angle
+apply), not just the root. Verified live with all 10 roles:
+- Flow: Start → beep1 → 5 s A-pose → beep2 (calibrate) → drive; ESC stops.
+- Positions come from `world_to_blender` (front-aligned +90°).
+- Only roles **valid at the calibration instant** are driven; a role going
+  invalid later holds its last target (no yank). This matters because while
+  seated the controllers (hands) aren't held and the feet can be lost under the
+  desk — calibrate while standing in A-pose with controllers held + feet visible
+  to get all 10.
+- Calibration timing must be performer-driven (the earlier auto-5s fired before
+  the performer was ready → bad/"failed" calibration). A standing A-pose capture
+  gave all 10 valid and **left/right symmetric about the hip** (no L/R swap;
+  every `_l` role sits at higher +X than its `_r` — character left is +X).
+- Dev two-step convenience: capture calibration once (store `LiveDriver` in
+  `bpy.app.driver_namespace['manekko_driver']`), then a drive step reuses it
+  without recalibrating.
+
+Still TODO: wire `live_ops.register()` into the add-on `register()` + an N-panel
+Start/Stop button (currently ESC-to-stop), and load-test as a packaged
+extension. Watch the A-pose elbow/knee singularity once arms/legs are driven.
+
 ## Next steps (task #3)
 
 1. Promote this modal into the real extension: full-body IK (10 position targets
