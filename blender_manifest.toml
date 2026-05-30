@@ -16,10 +16,19 @@ tags = ["Animation", "Rigging"]
 platforms = ["windows-x64"]
 
 [build]
-paths = [
-    "__init__.py",
-    "ui.py",
-    "src",
+# Package everything except the patterns below (so src/*.py and wheels/*.whl are
+# all included). A bare `paths = ["src"]` did NOT recurse into the directory and
+# skipped the wheels, producing a 2 KB zip.
+paths_exclude_pattern = [
+    "__pycache__/",
+    "/.git/",
+    "/.gitignore",
+    "/dist/",
+    "/docs/",
+    "/scripts/",
+    "/memory/",
+    "*.md",
+    "*.blend",
 ]
 
 # numpy is intentionally NOT bundled — Blender 5.1 ships numpy 2.3.4 (numpy2 ABI),
