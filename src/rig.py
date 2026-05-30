@@ -72,6 +72,23 @@ TRACKER_TO_BONE: dict[str, str] = {
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
 
 
+# --- P1: performer-sized model (build the PERFORMER's FK, not the character's) ---
+# Stage-1 cleanliness: scale each character bone SEGMENT to the performer's
+# measured length while keeping the character A-pose directions/orientations
+# (no performer armature exists; A-pose directions are a valid proxy). Joint
+# CENTERS (shoulder/hip placement) stay character ratios for now (the deferred
+# "fulcrum" fix). rest_rot is untouched, so apply.py needs no change and the
+# solved qpos becomes the performer's true joint angles -> no double conversion.
+# Set the ratios to match the character (or PERFORMER_*≈character) to fall back
+# to the pure character model. Measured 2026-05-31: performer arm
+# (shoulder->wrist) 0.55 m, thigh (hip->knee) 0.47 m, stature 1.80 m vs this CC
+# character ~1.59 m. Unmeasured bones (torso/spine/neck/shin/etc.) use the global
+# height stretch.
+PERFORMER_ARM_M = 0.55          # one side, shoulder->wrist (elbow split not needed)
+PERFORMER_THIGH_M = 0.47        # one side, hip joint->knee
+GLOBAL_HEIGHT_SCALE = 1.80 / 1.59
+
+
 @dataclass
 class RigModel:
     mjcf: str
@@ -128,6 +145,29 @@ def build_mjcf(arm) -> RigModel:
             axis = d_self.cross(mathutils.Vector((0.0, 0.0, 1.0)))
         return axis.normalized()
 
+    # --- P1: performer segment scales. Default = global height stretch; the two
+    # measured limbs are overridden. Scaling a body's PARENT-relative offset
+    # stretches that segment while preserving the character A-pose direction.
+    seg_scale: dict[str, float] = {bone: GLOBAL_HEIGHT_SCALE for bone, _, _ in CHAIN}
+
+    def _seglen(a: str, b: str) -> float:
+        return (_world_head(arm, a) - _world_head(arm, b)).length
+
+    for side in ("L", "R"):
+        up = f"CC_Base_{side}_Upperarm"
+        fo = f"CC_Base_{side}_Forearm"
+        ha = f"CC_Base_{side}_Hand"
+        char_arm = _seglen(up, fo) + _seglen(fo, ha)   # shoulder->elbow->wrist
+        if char_arm > 1e-6:
+            s = PERFORMER_ARM_M / char_arm
+            seg_scale[fo] = s   # offset Upperarm_head->Forearm_head == upper arm
+            seg_scale[ha] = s   # offset Forearm_head ->Hand_head    == forearm
+        th = f"CC_Base_{side}_Thigh"
+        ca = f"CC_Base_{side}_Calf"
+        char_thigh = _seglen(th, ca)
+        if char_thigh > 1e-6:
+            seg_scale[ca] = PERFORMER_THIGH_M / char_thigh   # offset Thigh->Calf == thigh
+
     identity = mathutils.Quaternion()  # (1,0,0,0)
 
     def emit_body(bone: str, parent: str | None) -> ET.Element:
@@ -146,6 +186,7 @@ def build_mjcf(arm) -> RigModel:
             pos = head_w
         else:
             pos = Rpar_inv @ (head_w - _world_head(arm, parent))
+            pos = pos * seg_scale[bone]   # P1: stretch this segment to performer size
         quat = Rpar_inv @ Rb
         body = ET.Element("body", name=bname, pos=_v(pos), quat=_q(quat))
 

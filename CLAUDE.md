@@ -5,7 +5,56 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
-## ⚠️ START HERE — 2026-05-29 夕方
+## ⚠️ START HERE — 2026-05-31（最新・これを最初に読む）
+
+**いまの状態**: `dist/manekko-0.0.6.zip` をビルド済みだが **未実機テスト**（オーナーは水泳へ、~6h後に戻って
+Blender+SteamVR 起動→0.0.6 をインストール→Start でライブ確認、から再開予定）。0.0.6 には**未コミットの
+P1**が入っている（コミット済みは bone-offset と wheel-bootstrap と肘ドロップまで）。
+
+**今日やったこと（2026-05-31 午前）**:
+1. **トラッカーのボーンオフセット補正**（commit `79ae66a`）: 各トラッカーの報告 pose を、その**ローカル法線方向
+   に体内へ寄せて**から `svr_to_blender`。VIVE Tracker 3.0 の法線軸は実機計測で **-Z**（床に平置きで法線が天井
+   ＝-Z）、ボーンは床側なので寄せる向きは **+Z**。`openvr_reader.correct_to_bone()`＋`BONE_OFFSET_M`
+   {head 8cm, hip/elbow/knee 3cm, foot 1cm, 手=0}。回転行列があるので表裏の不定性は無い。実機で量＝設定値・
+   向き＝床方向を検証。頭・足・膝が劇的に改善。
+2. **wheel 自己ブートストラップ**（commit `c1174bf`）: Blender の拡張 wheel 自動展開が**この環境では動いて
+   いなかった**（`extensions/.local` が一度も作られず `import openvr` 失敗。従来「動いた」のは開発用 temp-libs
+   が sys.path に居たから）。`__init__._ensure_wheels()` が同梱 `wheels/*.whl` を `_libs/` に一度展開して
+   sys.path 先頭へ（既に import 可なら no-op）。
+3. **肘トラッカーを IK から除外**（commit `c1174bf`）: 腕は過剰拘束（Upperarm ball3 + Forearm hinge1 =
+   4DOF vs 肘3+手首3=6）。肘＋不正確なコントローラ手首ターゲットが取り合い肘を固める。→ 手首で腕を駆動し
+   肘スイベルは Posture が解決。肘トラッカーは読むだけ（戻すのは `rig.TRACKER_TO_BONE` の2行コメント解除）。
+4. **P1: 演者寸法モデル化（未コミット・0.0.6・未テスト）= アーキテクチャの転換**。`docs` というより
+   思想は下記「設計原理」を見よ。`rig.build_mjcf` が各ボディの親相対オフセットを**演者の肢長**にスケール
+   （腕 肩→手首 0.55m、腿 hip→膝 0.47m、その他 `GLOBAL_HEIGHT_SCALE=1.80/1.59`）、向きはキャラ A-pose を保持。
+   よって **solve の qpos ＝演者の真の関節角**（solve にキャラ寸法が入らない）。`apply` は原理的に無修正、
+   calibration は自動清浄化（演者rest に登録）。**hip 高さノブは Stage 1(`live.py`) から Stage 2
+   (`apply.ROOT_HEIGHT_SCALE`, 既定1.0) へ移設**。
+
+**設計原理（2026-05-31 にオーナーと合意・最重要）**: カメラ/マーカー方式が効くのは **(1) 演者の完全FKを
+演者寸法骨格で再構成 → (2) 別工程でキャラへリターゲット** と二段階を分けるから。スパーストラッカーは両者を
+1つの濁った solve に潰すと失敗する。よって **mink は「演者のFKを作る道具」、リターゲットは別**。
+seam をコード不変条件に: **Stage 1 の solve にキャラ情報を入れない**（演者寸法・演者rest・トラッカーのみ）。
+キャラが出るのは全部 Stage 2（`apply` の角度リターゲット＋root高さ配置）。「完全」は無理でも「クリーン
+（二重変換を作らない）」は取る、というインディ方針。**角度は最後に・段階的に**（部位別 orientation_cost を
+0→正、head→pelvis→chest→feet→四肢 の順。剛体単一から、捻れる四肢は最後）。
+
+**次回の再開手順**: ①Blender5.1+SteamVR起動 ②`dist/manekko-0.0.6.zip` インストール（初回有効化で `_libs/`
+へ wheel 展開、数秒）③Start でP1ライブ確認＝キャラが歪まない/足がほぼ接地（浮くなら `apply.ROOT_HEIGHT_SCALE`
+を下げる）/腕が手首から追従。**P1がおかしければ** `rig` のスケール比を 1.0 にすればキャラモデルに戻る。
+身長合わせの保険として **CCキャラを180cmに伸ばす**手も可（オーナー曰く簡単）。
+**チューニングノブ**: `rig.PERFORMER_ARM_M/PERFORMER_THIGH_M/GLOBAL_HEIGHT_SCALE`、`apply.ROOT_HEIGHT_SCALE`。
+
+**次フェーズ＝トラッカー再配置（物理加工待ち・総合案その1）**: 肘トラッカー→**手首**（hand_l/r=L/R_Hand,
+位置。コントローラ手首問題を解消）、片膝→**胸**（新role `chest`=`CC_Base_Spine02`, 位置, ロングバンド要購入）、
+もう片膝→**スペア**、コントローラ→**手のひら**（トリガー/録画専用、将来 Hand の向き源）、**両膝は IK から
+ドロップ**（足で駆動）。点で確認後に全部回転を送る。鎖骨は加工難度で今回見送り。コード変更は
+`SERIAL_TO_ROLE`/`TRACKER_TO_BONE`/`ROLES`/`BONE_OFFSET_M`（手首・胸）のマッピング＋定数のみ（角度ゼロ）。
+**リスク**: 両膝ドロップは脚が荷重・深屈伸するので Posture が膝の向きを誤推定しうる（スペアを膝に戻せるように）。
+
+---
+
+## START HERE（旧）— 2026-05-29 夕方
 
 **何を作っているか**: SteamVR の VIVE Tracker 3.0（最大10点）をリアルタイムに取り込み、
 Blender 上の Character Creator（CC）キャラを全身IKで動かす Blender 5.1 拡張。

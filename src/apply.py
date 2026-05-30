@@ -29,6 +29,15 @@ import mathutils
 import mujoco
 
 
+# Stage-2 retarget knob (SCALAR, no angles): where to place the (performer-FK)
+# root height on the character. With the performer-sized model (P1) the root
+# already solves at ~the character's hip height, so 1.0 keeps it as-is. If the
+# character floats or you want it lower, drop this (scales the root world height
+# about the floor Z=0). This is the correct side of the Stage-1/Stage-2 seam:
+# it touches only the character's root placement, never the performer-FK solve.
+ROOT_HEIGHT_SCALE = 1.0
+
+
 def apply_pose(arm, rm, configuration, *, view_layer=None) -> None:
     import bpy
     if view_layer is None:
@@ -62,6 +71,7 @@ def apply_pose(arm, rm, configuration, *, view_layer=None) -> None:
             # pose (position + orientation). Scale is explicitly stripped so
             # the armature object's inverse scale never contaminates the bone.
             pos = mathutils.Vector((qpos[adr], qpos[adr + 1], qpos[adr + 2]))
+            pos.z *= ROOT_HEIGHT_SCALE   # Stage-2: character root height placement
             quat = mathutils.Quaternion(
                 (qpos[adr + 3], qpos[adr + 4], qpos[adr + 5], qpos[adr + 6]))
             world = mathutils.Matrix.Translation(pos) @ quat.to_matrix().to_4x4()
