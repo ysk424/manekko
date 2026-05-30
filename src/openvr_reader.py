@@ -95,6 +95,47 @@ def _mat34_pos(m) -> tuple[float, float, float]:
     return (m[0][3], m[1][3], m[2][3])
 
 
+def _mat34_rot(m) -> np.ndarray:
+    """Rotation 3x3 of an OpenVR HmdMatrix34_t. Columns are the device's local
+    axes expressed in SteamVR world coordinates (local -> world)."""
+    return np.array([[m[r][c] for c in range(3)] for r in range(3)], dtype=float)
+
+
+# Bone-offset correction (raw tracker pose -> joint/bone position) -------------
+# The tracker reports a pose on its own shell, not at the bone underneath. We push
+# the raw position along the tracker's local normal, toward the body, by a small
+# per-role distance. Measured empirically 2026-05-31 by laying all 8 VIVE Tracker
+# 3.0 flat with the normal to the ceiling: the local axis pointing up was -Z for
+# every unit (dot 0.95-1.0). The bone sits on the FLOOR side, so the toward-bone
+# direction is local +Z. Controllers (hands) are held, so no correction.
+# Applied in SteamVR frame, before svr_to_blender (so it composes with any later
+# yaw/axis swap). Because snapshot() returns corrected positions, both the A-pose
+# calibration capture and the live targets use the same corrected frame.
+TRACKER_NORMAL_LOCAL = np.array([0.0, 0.0, 1.0])  # local axis toward the bone (floor side)
+BONE_OFFSET_M: dict[str, float] = {
+    "head": 0.08,
+    "hip": 0.03,
+    "elbow_l": 0.03, "elbow_r": 0.03,
+    "knee_l": 0.03, "knee_r": 0.03,
+    "foot_l": 0.01, "foot_r": 0.01,
+    # hand_l / hand_r: VIVE controllers, gripped in the hand -> no correction.
+}
+
+
+def correct_to_bone(role: str, R: np.ndarray, pos_svr) -> np.ndarray:
+    """Push a raw SteamVR-frame tracker position along its local normal toward
+    the bone by BONE_OFFSET_M[role]. Roles with no entry are returned unchanged."""
+    a = BONE_OFFSET_M.get(role, 0.0)
+    pos = np.asarray(pos_svr, float)
+    if a == 0.0:
+        return pos
+    n_world = R @ TRACKER_NORMAL_LOCAL
+    norm = float(np.linalg.norm(n_world))
+    if norm < 1e-9:
+        return pos
+    return pos + (n_world / norm) * a
+
+
 @dataclass
 class Calibration:
     """Per-role position offset added to raw (Blender-space) tracker positions.
@@ -285,7 +326,9 @@ class TrackerReader:
                         connected=connected, pose_valid=valid, role=role,
                     ))
                     if role and valid:
-                        pos = _mat34_pos(p.mDeviceToAbsoluteTracking)
+                        m = p.mDeviceToAbsoluteTracking
+                        pos = _mat34_pos(m)
+                        pos = correct_to_bone(role, _mat34_rot(m), pos)
                         latest[role] = svr_to_blender(pos)
 
                 with self._lock:
