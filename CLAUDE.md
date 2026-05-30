@@ -11,8 +11,13 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 Blender 上の Character Creator（CC）キャラを全身IKで動かす Blender 5.1 拡張。
 ライブ駆動 + Action へのキー提録。IK は **mink**（MuJoCoベース差分IK / daqp QP）。
 
-**リポ**: https://github.com/ysk424/manekko （private）/ branch `main` / 最終 push `c9759a6`
-**締切**: 月曜。明朝（5/30 早朝）から再開。
+**リポ**: https://github.com/ysk424/manekko （private）/ branch `main`
+**締切**: 月曜。
+
+**🎉 2026-05-30: 全身ライブモーキャップ成立**（実機）。トラッカー位置→mink IK→FK角→CCキャラを
+リアルタイム駆動できている（`src/live_ops.py`）。途中で出た**ヌル空間ドリフト**（足踏みでねじれ累積）は
+`posture_cost` を 1e-2→**1e-1** に上げて解消（`solver.py` 既定値）。残：キャリブ微調整（後回し）、
+録画・UI、拡張への結線。詳細 `docs/live_driving_notes.md` / `docs/mink_pitfalls.md`。
 
 ### いま何ができているか（全部実機検証済み）
 

@@ -24,7 +24,15 @@ class ManekkoSolver:
         tracker_to_body: dict[str, str],
         *,
         position_cost: float = 1.0,
-        posture_cost: float = 1e-2,
+        # 1e-1 (not 1e-2): position-only differential IK leaves the body's
+        # twist/redundant DOFs unconstrained, so velocity integration drifts
+        # (path-dependent null-space wind-up — cyclic motion like marching
+        # ratchets the spine/arms into a twist; reversible by moving the other
+        # way). The PostureTask regularizes toward the rest A-pose each frame,
+        # giving the null space an absolute anchor. 1e-1 killed the observed
+        # drift live (2026-05-30) with acceptable tracking. See
+        # docs/mink_pitfalls.md "null-space drift".
+        posture_cost: float = 1e-1,
         solver: str = "daqp",
         damping: float = 1e-1,
     ) -> None:

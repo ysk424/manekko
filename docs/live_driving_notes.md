@@ -151,9 +151,17 @@ apply), not just the root. Verified live with all 10 roles:
   `bpy.app.driver_namespace['manekko_driver']`), then a drive step reuses it
   without recalibrating.
 
+**Full-body live mocap WORKING (2026-05-30 PM).** Once all limbs were driven, a
+**null-space drift** appeared (cyclic motion like marching ratcheted the body
+into a growing twist; reversible). Fixed by raising `posture_cost` 1e-2 → **1e-1**
+(now the `solver.py` default) — see docs/mink_pitfalls.md "null-space drift".
+With that, mocap tracks cleanly (fine-tuning still wanted). Calibration polish is
+deferred (do other implementation first).
+
 Still TODO: wire `live_ops.register()` into the add-on `register()` + an N-panel
 Start/Stop button (currently ESC-to-stop), and load-test as a packaged
-extension. Watch the A-pose elbow/knee singularity once arms/legs are driven.
+extension. Optional: joint limits (ConfigurationLimit) and posture-cost tuning
+(0.3–0.5) if more stability is wanted.
 
 ## Next steps (task #3)
 
