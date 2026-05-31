@@ -10,13 +10,6 @@ import mujoco
 import numpy as np
 
 
-def _se3_pos(pos) -> "mink.SE3":
-    """SE3 with identity rotation at the given position (orientation ignored)."""
-    return mink.SE3.from_rotation_and_translation(
-        mink.SO3.identity(), np.asarray(pos, dtype=float)
-    )
-
-
 class ManekkoSolver:
     def __init__(
         self,
@@ -32,6 +25,17 @@ class ManekkoSolver:
         # the elbow swivel. So the hands go back to full weight for tight wrist
         # tracking. Pure scalar weight, no angles.
         hand_position_cost: float = 1.0,
+        # Roles that additionally track ORIENTATION, not just position. Staged
+        # rollout of rotation (CLAUDE.md "角度は最後に・段階的に"): head + hip
+        # first — single rigid pieces (the pelvis root sets the body facing, the
+        # head its gaze), no twist coupling. Expand to feet/limbs once verified.
+        # The orientation target comes from the tracker pose, registered at the
+        # A-pose (Calibration.rot_offset); see live.LiveDriver.step.
+        orientation_roles: tuple[str, ...] = ("head", "hip"),
+        # Kept low vs position_cost (1.0): a gentle orientation pull so a slightly
+        # off registration can't whip the body around (the owner's "ぐるぐる回る"
+        # risk). Raise once head+hip prove stable.
+        orientation_cost: float = 1e-1,
         # 1e-1 (not 1e-2): position-only differential IK leaves the body's
         # twist/redundant DOFs unconstrained, so velocity integration drifts
         # (path-dependent null-space wind-up — cyclic motion like marching
@@ -54,11 +58,12 @@ class ManekkoSolver:
         self.frame_tasks: dict[str, mink.FrameTask] = {}
         for role, body in tracker_to_body.items():
             pc = hand_position_cost if role in hand_roles else position_cost
+            oc = orientation_cost if role in orientation_roles else 0.0
             t = mink.FrameTask(
                 frame_name=body,
                 frame_type="body",
                 position_cost=pc,
-                orientation_cost=0.0,   # position-only (v1)
+                orientation_cost=oc,    # 0 = position-only (default for most roles)
                 lm_damping=1.0,
             )
             self.frame_tasks[role] = t
@@ -71,12 +76,29 @@ class ManekkoSolver:
     def reset_to_rest(self) -> None:
         self.configuration.update(self.model.qpos0)
 
-    def set_target_positions(self, positions: dict[str, np.ndarray]) -> None:
-        """positions: role -> world xyz (meters). Missing roles keep prior target."""
+    def set_target_poses(
+        self,
+        positions: dict[str, np.ndarray],
+        orientations: dict[str, np.ndarray] | None = None,
+    ) -> None:
+        """positions: role -> world xyz (m). orientations: role -> 3x3 world
+        rotation (optional). Sets each FrameTask target SE3; a role with no
+        orientation gets identity rotation (ignored anyway when its
+        orientation_cost is 0). Missing roles keep their prior target."""
+        orientations = orientations or {}
         for role, pos in positions.items():
             task = self.frame_tasks.get(role)
-            if task is not None:
-                task.set_target(_se3_pos(pos))
+            if task is None:
+                continue
+            R = orientations.get(role)
+            rot = mink.SO3.from_matrix(np.asarray(R, float)) if R is not None \
+                else mink.SO3.identity()
+            task.set_target(mink.SE3.from_rotation_and_translation(
+                rot, np.asarray(pos, dtype=float)))
+
+    def set_target_positions(self, positions: dict[str, np.ndarray]) -> None:
+        """Position-only convenience: identity orientation targets."""
+        self.set_target_poses(positions)
 
     def set_targets_from_current(self) -> None:
         """Initialize every FrameTask target to the current body pose (rest)."""

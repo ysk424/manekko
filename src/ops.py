@@ -106,19 +106,24 @@ class MANEKKO_OT_start(bpy.types.Operator):
         ovr, openvr = self._ovr, self._openvr
         poses = self.vr.getDeviceToAbsoluteTrackingPose(
             openvr.TrackingUniverseStanding, 0, openvr.k_unMaxTrackedDeviceCount)
-        snap = {}
+        pos_snap, rot_snap = {}, {}
         for role, idx in self.role_idx.items():
             p = poses[idx]
             if p.bPoseIsValid:
                 m = p.mDeviceToAbsoluteTracking
+                R = ovr._mat34_rot(m)
                 # Push the raw tracker position along its local normal toward the
                 # bone (BONE_OFFSET_M[role]) in the SteamVR frame, BEFORE the axis
                 # swap — same as openvr_reader._loop. This was previously skipped
                 # here, so the bone offsets were dead in the live extension (the
                 # offsets only ran in the unused TrackerReader thread).
-                pos = ovr.correct_to_bone(role, ovr._mat34_rot(m), ovr._mat34_pos(m))
-                snap[role] = ovr.world_to_blender(pos)
-        return snap
+                pos = ovr.correct_to_bone(role, R, ovr._mat34_pos(m))
+                pos_snap[role] = ovr.world_to_blender(pos)
+                # Orientation in the Blender world frame (same axis map); used
+                # only by orientation-tracked roles (head, hip) after A-pose
+                # registration in Calibration.rot_offset.
+                rot_snap[role] = ovr.world_rot_to_blender(R)
+        return pos_snap, rot_snap
 
     def _drive_snapshot(self, valid):
         cal = self.driver.calibration
@@ -147,12 +152,12 @@ class MANEKKO_OT_start(bpy.types.Operator):
             return self._finish(context)
         if event.type == "TIMER":
             now = time.perf_counter()
-            valid = self._read_valid()
+            valid, valid_rot = self._read_valid()
 
             if _S["calib_at"] is not None and now >= _S["calib_at"]:
                 _S["calib_at"] = None
                 if valid:
-                    self.driver.calibrate(valid)
+                    self.driver.calibrate(valid, valid_rot)
                     self._cio.save(self.driver.arm, self.driver.calibration)
                     _beep(1175, 400)
 
@@ -164,7 +169,7 @@ class MANEKKO_OT_start(bpy.types.Operator):
 
             snap = self._drive_snapshot(valid)
             if snap:
-                self.driver.step(snap, iters=4)
+                self.driver.step(snap, valid_rot, iters=4)
                 if _S["recording"]:
                     self._keyframe(context)
                     context.scene.frame_set(context.scene.frame_current + 1)

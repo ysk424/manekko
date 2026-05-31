@@ -59,21 +59,37 @@ class LiveDriver:
             out[role] = np.array(data.xpos[bid])
         return out
 
+    def body_rest_orientations(self) -> dict[str, np.ndarray]:
+        """Each tracker role's body world orientation (3x3) at the rest (A) pose."""
+        self.solver.reset_to_rest()
+        data = self.solver.configuration.data
+        out = {}
+        for role, body in self.rm.tracker_to_body.items():
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)
+            out[role] = np.array(data.xmat[bid]).reshape(3, 3)
+        return out
+
     # -- calibration ----------------------------------------------------
-    def calibrate(self, snapshot: dict[str, np.ndarray] | None = None) -> _ovr.Calibration:
+    def calibrate(self, snapshot: dict[str, np.ndarray] | None = None,
+                  snapshot_rot: dict[str, np.ndarray] | None = None) -> _ovr.Calibration:
         """Record A-pose offsets from the current tracker snapshot.
 
         Only roles present in the snapshot are calibrated; absent roles get no
-        offset and their targets are ignored until calibrated.
+        offset and their targets are ignored until calibrated. If orientations
+        (``snapshot_rot``) are supplied, an orientation mount offset is also
+        registered for each role (used only by orientation-tracked roles).
         """
         if snapshot is None:
             snapshot = self.reader.snapshot()
         rest = self.body_rest_positions()
-        self.calibration = _ovr.Calibration.from_apose(snapshot, rest)
+        rest_rot = self.body_rest_orientations()
+        self.calibration = _ovr.Calibration.from_apose(
+            snapshot, rest, snapshot_rot, rest_rot)
         return self.calibration
 
     # -- per-frame step -------------------------------------------------
     def step(self, snapshot: dict[str, np.ndarray] | None = None,
+             snapshot_rot: dict[str, np.ndarray] | None = None,
              *, dt: float = 1.0 / 60.0, iters: int = 4):
         """One solve+apply tick. Returns True on success, False if held.
 
@@ -87,10 +103,12 @@ class LiveDriver:
 
         if self.calibration is not None:
             targets = self.calibration.apply(snapshot)
+            orientations = self.calibration.apply_rot(snapshot_rot) if snapshot_rot else {}
         else:
             targets = snapshot  # uncalibrated: drive raw (mostly for testing)
+            orientations = {}
 
-        self.solver.set_target_positions(targets)
+        self.solver.set_target_poses(targets, orientations)
         try:
             self.last_q = self.solver.solve(dt=dt, iters=iters)
             self.last_error = None

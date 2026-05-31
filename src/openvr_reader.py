@@ -97,6 +97,20 @@ def world_to_blender(p) -> np.ndarray:
     return np.array((z, x, y), dtype=float)
 
 
+# Same axis map as world_to_blender (svr x,y,z -> z,x,y), in matrix form, used to
+# rotate a device ORIENTATION into the Blender world frame consistently with the
+# position. Blender = W @ svr, with W a proper rotation (det +1).
+_WORLD_TO_BLENDER_M = np.array([[0.0, 0.0, 1.0],
+                                [1.0, 0.0, 0.0],
+                                [0.0, 1.0, 0.0]])
+
+
+def world_rot_to_blender(R_svr) -> np.ndarray:
+    """Device orientation (local->world, SteamVR) -> local->world in Blender,
+    using the same axis map as world_to_blender() applies to positions."""
+    return _WORLD_TO_BLENDER_M @ np.asarray(R_svr, float)
+
+
 def _mat34_pos(m) -> tuple[float, float, float]:
     """Translation column of an OpenVR HmdMatrix34_t (row-major 3x4)."""
     return (m[0][3], m[1][3], m[2][3])
@@ -154,25 +168,50 @@ class Calibration:
     """
 
     offset: dict[str, np.ndarray] = field(default_factory=dict)
+    # Per-role orientation MOUNT offset (3x3), in the tracker-LOCAL frame, so that
+    # at the A-pose  R_rest = R_raw_apose @ rot_offset  and live the target body
+    # orientation = R_raw_live @ rot_offset. Only roles with orientation tracking
+    # (staged rollout: head, hip first) get an entry; the rest stay position-only.
+    rot_offset: dict[str, np.ndarray] = field(default_factory=dict)
 
     @classmethod
     def from_apose(
         cls,
         raw_positions: dict[str, np.ndarray],
         body_rest_positions: dict[str, np.ndarray],
+        raw_rotations: dict[str, np.ndarray] | None = None,
+        body_rest_rotations: dict[str, np.ndarray] | None = None,
     ) -> "Calibration":
         off = {}
         for role, raw in raw_positions.items():
             rest = body_rest_positions.get(role)
             if rest is not None:
                 off[role] = np.asarray(rest, float) - np.asarray(raw, float)
-        return cls(offset=off)
+        rot_off = {}
+        if raw_rotations and body_rest_rotations:
+            for role, R_raw in raw_rotations.items():
+                R_rest = body_rest_rotations.get(role)
+                if R_rest is not None:
+                    # mount offset (tracker-local): R_rest = R_raw @ M -> M = R_raw^T @ R_rest
+                    rot_off[role] = np.asarray(R_raw, float).T @ np.asarray(R_rest, float)
+        return cls(offset=off, rot_offset=rot_off)
 
     def apply(self, raw_positions: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         out = {}
         for role, raw in raw_positions.items():
             o = self.offset.get(role)
             out[role] = np.asarray(raw, float) + (o if o is not None else 0.0)
+        return out
+
+    def apply_rot(self, raw_rotations: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Live target body orientation per role with a registered mount offset:
+        R_target_world = R_raw_live @ rot_offset. Roles without one are omitted
+        (they stay position-only in the solver)."""
+        out = {}
+        for role, R_raw in raw_rotations.items():
+            M = self.rot_offset.get(role)
+            if M is not None:
+                out[role] = np.asarray(R_raw, float) @ M
         return out
 
 

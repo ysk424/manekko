@@ -29,6 +29,8 @@ def save(arm, calibration) -> str | None:
         "armature": getattr(arm, "name", ""),
         "offset": {role: [float(x) for x in vec]
                    for role, vec in calibration.offset.items()},
+        "rot_offset": {role: [[float(x) for x in row] for row in mat]
+                       for role, mat in calibration.rot_offset.items()},
     }
     path = _path(create=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -47,6 +49,8 @@ def load(arm) -> "_ovr.Calibration | None":
                   for role, vec in data.get("offset", {}).items()}
         if not offset:
             return None
-        return _ovr.Calibration(offset=offset)
+        rot_offset = {role: np.asarray(mat, dtype=float)
+                      for role, mat in data.get("rot_offset", {}).items()}
+        return _ovr.Calibration(offset=offset, rot_offset=rot_offset)
     except Exception:
         return None
