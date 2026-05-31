@@ -22,8 +22,32 @@ import bpy
 
 COUNTDOWN = 5.0
 
+# Option-B spike (v0.1.1): legacy controller buttons/axes (trigger, trackpad)
+# were dead under VRApplication_Background. Try Overlay (coexists with the scene
+# app, still receives poses) to see if legacy getControllerState wakes up; fall
+# back to Background if Overlay init fails. The pose/IK path is unchanged — this
+# only adds an observable controller readout in the N-panel. Set to "background"
+# to revert the app-type change.
+OPENVR_APP_TYPE = "overlay"   # "overlay" | "background"
+
 # Shared state between the running modal and the button operators (one session).
-_S = {"stop": False, "calib_at": None, "record_at": None, "recording": False}
+_S = {"stop": False, "calib_at": None, "record_at": None, "recording": False,
+      "ctrl": {}, "app_type": ""}
+
+
+def _init_vr(openvr):
+    """Init OpenVR, trying OPENVR_APP_TYPE first (Overlay for the legacy-input
+    spike) then falling back to Background. Returns (vr, type_name)."""
+    types = {"overlay": openvr.VRApplication_Overlay,
+             "background": openvr.VRApplication_Background}
+    order = ["overlay", "background"] if OPENVR_APP_TYPE == "overlay" else ["background"]
+    last = None
+    for name in order:
+        try:
+            return openvr.init(types[name]), name
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise last
 
 
 def _beep(freq: int, ms: int) -> None:
@@ -62,10 +86,11 @@ class MANEKKO_OT_start(bpy.types.Operator):
             self.report({"ERROR"}, "No CC_Base armature found")
             return {"CANCELLED"}
         try:
-            self.vr = openvr.init(openvr.VRApplication_Background)
+            self.vr, app_type = _init_vr(openvr)
         except Exception as e:
             self.report({"ERROR"}, f"SteamVR not available: {e}")
             return {"CANCELLED"}
+        _S["app_type"] = app_type
 
         self._openvr, self._ovr, self._cio = openvr, ovr, cio
         self.role_idx = {}
@@ -131,6 +156,42 @@ class MANEKKO_OT_start(bpy.types.Operator):
             return {}
         return {r: v for r, v in valid.items() if r in cal.offset}
 
+    def _read_buttons(self):
+        """Option-B spike: read legacy controller state for the palm controllers
+        so the N-panel can show whether trigger/trackpad/buttons are live (packet
+        number advancing + axis values changing = legacy input works)."""
+        out = {}
+        for role in ("palm_l", "palm_r"):
+            idx = self.role_idx.get(role)
+            if idx is None:
+                continue
+            try:
+                ok, st = self.vr.getControllerState(idx)
+            except Exception as e:  # noqa: BLE001
+                out[role] = {"err": repr(e)}
+                continue
+            if not ok:
+                out[role] = {"invalid": True}
+                continue
+            out[role] = {
+                "pkt": int(st.unPacketNum),
+                "btn": int(st.ulButtonPressed),
+                # VIVE wand: axis0 = trackpad (x,y), axis1 = trigger (x in 0..1).
+                "axes": [(round(st.rAxis[i].x, 3), round(st.rAxis[i].y, 3))
+                         for i in range(5)],
+            }
+        return out
+
+    def _grip_from_ctrl(self, ctrl):
+        """Controller trigger (axis1.x, 0..1) -> per-hand finger curl. Maps the
+        palm controller to the same-side hand."""
+        out = {}
+        for palm, hand in (("palm_l", "hand_l"), ("palm_r", "hand_r")):
+            d = ctrl.get(palm)
+            if d and "axes" in d:
+                out[hand] = max(0.0, min(1.0, float(d["axes"][1][0])))
+        return out
+
     # -- recording ------------------------------------------------------
     def _keyframe(self, context):
         arm, rm = self.driver.arm, self.driver.rm
@@ -142,6 +203,12 @@ class MANEKKO_OT_start(bpy.types.Operator):
                 pb.keyframe_insert("rotation_quaternion", frame=frame)
             else:
                 pb.keyframe_insert("rotation_euler", frame=frame)
+        # finger bones (trigger-driven curl, rotation_euler) — capture the grip too
+        for names in self.driver.finger_names.values():
+            for bn in names:
+                pb = arm.pose.bones.get(bn)
+                if pb is not None:
+                    pb.keyframe_insert("rotation_euler", frame=frame)
 
     # -- modal loop -----------------------------------------------------
     def modal(self, context, event):
@@ -153,6 +220,7 @@ class MANEKKO_OT_start(bpy.types.Operator):
         if event.type == "TIMER":
             now = time.perf_counter()
             valid, valid_rot = self._read_valid()
+            _S["ctrl"] = self._read_buttons()   # option-B spike readout
 
             if _S["calib_at"] is not None and now >= _S["calib_at"]:
                 _S["calib_at"] = None
@@ -169,7 +237,8 @@ class MANEKKO_OT_start(bpy.types.Operator):
 
             snap = self._drive_snapshot(valid)
             if snap:
-                self.driver.step(snap, valid_rot, iters=4)
+                grip = self._grip_from_ctrl(_S["ctrl"])
+                self.driver.step(snap, valid_rot, grip, iters=4)
                 if _S["recording"]:
                     self._keyframe(context)
                     context.scene.frame_set(context.scene.frame_current + 1)

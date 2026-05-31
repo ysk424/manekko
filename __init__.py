@@ -1,17 +1,22 @@
 """Manekko — VIVE Tracker full-body mocap → CC character via mink IK.
 
-Blender 5.1 extension. Bundled wheels (mink/mujoco/openvr/...) are normally put
-on sys.path by Blender's extension wheel system; numpy comes from Blender itself.
+Blender 5.1 extension. The bundled wheels (mink/mujoco/openvr/...) are supposed
+to be installed and put on the import path by Blender's own extension wheel
+system (manifest ``wheels = [...]``). In practice that does NOT work in this
+environment — with the manifest wheels alone, ``import openvr`` raises
+ModuleNotFoundError (verified 2026-05-31 on v0.1.3, both before and after the
+NVIDIA-era note). So we self-bootstrap: ``_ensure_wheels()`` extracts the bundled
+``./wheels/*.whl`` once into ``./_libs`` and prepends it to ``sys.path`` (no-op
+if the deps already import). numpy is never bundled, so it resolves to Blender's.
 
-In practice that auto-install proved unreliable here (no ``extensions/.local``
-site-packages was ever created, so ``import openvr`` failed at runtime). So we
-self-bootstrap: ``_ensure_wheels()`` extracts the bundled ./wheels/*.whl once
-into ./_libs and puts it on sys.path — but only if the deps don't already import
-(if Blender did install them, or a dev path is active, it's a no-op). numpy is
-never bundled, so it keeps resolving to Blender's own.
+This trips Blender 5.1's "no sys.path modification" policy, shown as a warning
+("Policy violation with sys.path: ._libs"). That warning is COSMETIC: it does
+not block the extension and it is NOT why the Add-ons UI lacks an uninstall
+button (removing the sys.path use in v0.1.3 cleared the warning but the uninstall
+button was still absent — unrelated). Uninstall by deleting the install folder.
 
-N-panel "Manekko" (3D View sidebar) has three buttons: Start/Stop, Record,
-Calibrate. See src/ops.py.
+N-panel "Manekko" (3D View sidebar): Start/Stop, Record, Calibrate, plus a
+"Finger curl dir" field. See src/ops.py.
 """
 from __future__ import annotations
 
@@ -27,8 +32,9 @@ from bpy.types import WindowManager
 
 def _ensure_wheels() -> None:
     """Guarantee the bundled deps are importable, independent of Blender's wheel
-    system. No-op if they already import. Extracts ./wheels/*.whl into ./_libs
-    once (excluding numpy, which is never bundled) and prepends it to sys.path."""
+    system (which does not surface them here). No-op if they already import.
+    Extracts ./wheels/*.whl into ./_libs once (excluding numpy, never bundled)
+    and prepends it to sys.path."""
     try:
         import openvr  # noqa: F401
         import mink     # noqa: F401  (pulls in mujoco)

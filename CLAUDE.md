@@ -5,17 +5,22 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
-## ⚠️ START HERE — 2026-05-31（v0.1.0「最初の完成品」・これを最初に読む）
+## ⚠️ START HERE — 2026-05-31（v0.1.5 完成・公開済み・これを最初に読む）
 
-**いまの状態**: `dist/manekko-0.1.0.zip` ＝ **最初の完成品（実機で全身位置IK＋全ロール回転が動作）**。
-コミット/プッシュ済み。**フェイス(iPhone ARKit)は別プロジェクトで本リポ対象外**。残るは**手首と指の
-握り/伸ばし**（コントローラのボタン/トラックパッドで駆動する案を検討、本ファイル末尾「次の検討」参照）。
-使い込むと不具合が出うる→カスタムmocap方針で都度実験対応。
+**いまの状態**: `dist/manekko-0.1.5.zip` ＝ **完成品。コミット/プッシュ済み、GitHub を public 化済み**
+（参照実装として）。**ここで一区切り**。次にこの Code を起動するのは**利用中に見つけたバグの修正**のとき
+（バグが無ければ当分アクセスされない＝休眠）。**フェイス(iPhone ARKit)は別プロジェクトで本リポ対象外**。
+カスタムmocap方針＝不具合は都度実験対応。
 
-### v0.1.0 で何ができるか（実機検証済み）
+**バグ修正で来た未来の自分へ**: まず下の「本番パスの最重要事実」を読む（ライブは `ops._read_valid` で
+reader スレッドではない）。各サブシステムの詳細 docs: 回転=`docs/rotation_notes.md`、手/指/入力/wheel=
+`docs/hands_and_input.md`、IK地雷=`docs/mink_pitfalls.md`、ライブ/座標=`docs/live_driving_notes.md`。
+
+### v0.1.5 で何ができるか（実機検証済み）
 - SteamVR の VIVE Tracker＋コントローラ → mink 差分IK → CCキャラを全身ライブ駆動＋Action録画。
 - **IKターゲット=7点（位置＋回転）**: hip, head, hand_l/r(=手首), foot_l/r, chest。
-- 回転検証済み: 足を伸ばしたまま捻れば追従、T/Aポーズで腕を捻れる。詳細は `docs/rotation_notes.md`。
+- 回転: 足を伸ばしたまま捻れば追従、T/Aポーズで腕を捻れる（`docs/rotation_notes.md`）。
+- **指の握り/伸ばし**: コントローラのトリガー(アナログ0..1)で開↔握り（`docs/hands_and_input.md`）。
 
 ### ⚠️ 本番パスの最重要事実（過去に地雷を踏んだ箇所）
 **ライブ駆動の実体は `src/ops.py` の `MANEKKO_OT_start` modal → `_read_valid`**。
@@ -40,8 +45,23 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ### トラッカー配置（物理・確定）
 旧 elbow×2→**手首**(hand_l/r 駆動)、旧 knee_l→**胸**(chest=CC_Base_Spine02)、旧 knee_r=**休止/スペア**、
-コントローラ×2→**手のひら(palm_l/r)**＝IK非対象（録画ビープ用／**将来の手首・指の入力源**）。膝・肘は IK ドロップ。
+コントローラ×2→**手のひら(palm_l/r)**＝IK非対象（**指トリガー入力源**）。膝・肘は IK ドロップ。
 `openvr_reader.SERIAL_TO_ROLE`/`BONE_OFFSET_M` 参照。
+
+### コントローラ入力＆指（v0.1.1–0.1.5）— 詳細 `docs/hands_and_input.md`
+- **レガシー `getControllerState` は `VRApplication_Overlay` で生きる**（Background では死。pose も維持）。
+  `ops._init_vr` が Overlay で init（失敗時 Background フォールバック、`OPENVR_APP_TYPE` で切替）。
+- トリガー(`rAxis[1].x`, 0..1)→ `ops._grip_from_ctrl` → `apply._apply_finger_curl` が指を rest↔fist 補間。
+- 指の曲げ方向は実機調整して `apply.FINGER_CURL_DIR_DEG` に焼込み（L 親指200/他指270, R 親指160/他指90°,
+  左右ミラー R=360−L）。指ボーンは `apply.finger_bone_names`＝Hand の全子孫（命名非依存）。録画で指もキー化。
+
+### wheel bootstrap と sys.path ポリシー警告（重要・既知）
+- 拡張は `__init__._ensure_wheels()` で同梱 `wheels/*.whl` を `_libs/` に展開し sys.path 先頭へ挿入。
+  **この環境では必須**（マニフェスト `wheels=` だけだと `import openvr` が ModuleNotFoundError＝v0.1.3で確認）。
+  Blender 自前の wheel 機構はここでは効かない。
+- これで **「Policy violation with sys.path: ._libs」警告**が出るが**無害**（機能阻害なし）。
+  アンインストールボタンが Add-ons UI に出ないのは**この警告とは無関係**（警告を消しても出なかった）。
+  **アンインストール＝拡張フォルダ削除**（`.../extensions/user_default/manekko/`）。
 
 ### チューニングノブ（全部「マッピング＋定数」）
 - `rig.PERFORMER_ARM_M=0.55 / PERFORMER_THIGH_M=0.47 / GLOBAL_HEIGHT_SCALE=1.80/1.59`（演者寸法）
@@ -49,16 +69,19 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 - `solver.orientation_cost=1e-1`（弱め設定。追従弱→上げる0.3-0.5 / 暴れる→下げる）
 - `solver.orientation_roles`（回転させる部位。捻れ・過剰拘束が出た部位を外す＝足が捻れたら足だけ外す等）
 - `openvr_reader.BONE_OFFSET_M`（head8 hip6 chest6 wrist3 foot1 cm、トラッカー法線方向に骨へ寄せる量）
+- `apply.FINGER_CURL_DIR_DEG`（指の握り方向・度。左右/親指別。`FINGER_CURL_ANGLE`=握り量）
+- `ops.OPENVR_APP_TYPE`（"overlay"。レガシー入力が要らない/問題が出たら "background"）
 
 ### ビルド/リリース
 `blender --command extension build --source-dir . --output-dir dist`（PowerShellは exe フルパス指定）。
 版を上げる→ビルド→旧zip削除（検証済みは fallback で一時保持可）。**動作検証が通るたび commit/push**。
 
-### 次の検討（コミット後に案出し予定 → 本ファイル/別ドキュメントに追記）
-- **手首＋指の握り/伸ばし**: トラッカーは6点で埋まり、手の細かい動きは残る。コントローラ(palm_l/r)の
-  **ボタン/トラックパッド/トリガー**で「握る/開く」「手首ひねり」を駆動する案。トリガーはレガシー
-  OpenVR では取れない（IVRInput 必要・過去に断念）ので、入力API含めて要設計。
+### 残作業 / 今後（休眠モード）
+- **基本は完成。次の起動はバグ修正のとき**。バグが無ければ当分触らない。修正時はまず本セクション上の
+  「本番パスの最重要事実」と該当 docs を読んでから着手（再調査の手間を省く）。
 - **フェイス**: iPhone ARKit、**別プロジェクト**。本リポでは扱わない。
+- 余力があれば: sys.path ポリシー違反を消す本筋（Blender の wheel 機構をこの環境で機能させる）。今は
+  bootstrap で回避＝警告許容。トラックパッド(`rAxis[0]`)は生きているので将来の追加入力源に使える。
 
 ---
 

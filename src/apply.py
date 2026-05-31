@@ -38,7 +38,66 @@ import mujoco
 ROOT_HEIGHT_SCALE = 1.0
 
 
-def apply_pose(arm, rm, configuration, *, view_layer=None) -> None:
+# --- Finger grip/extend (v0.1.1) -------------------------------------------
+# Fingers are NOT part of the IK chain; they are driven directly by the
+# controller trigger (analog 0..1) as a curl blend: rest (open) at 0, fist at 1.
+# Every finger descendant of the hand bone is curled about one local euler axis
+# by trigger * FINGER_CURL_ANGLE. Axis/sign are rig-specific — if a hand opens
+# backwards or splays instead of making a fist, flip the sign or change the axis
+# (tune live; same "experiment & adjust" approach as the other knobs).
+FINGER_CURL_ANGLE = 1.2          # radians at full grip (~69 deg per joint)
+# Curl DIRECTION per hand and per finger group (degrees), found live on this rig
+# by sweeping the (now removed) N-panel field and watching each group. The curl
+# axis lies in the bone-local X-Z plane (perpendicular to the bone length, which
+# is local Y) at this angle -> axis = (cos, 0, sin). The thumb curls differently
+# from the other four fingers, and L/R mirror (R = 360 - L for each group). The
+# flexion axis can't be auto-derived from straight rest fingers (degenerate),
+# so these are tuned constants — change them to re-tune for a different rig.
+FINGER_CURL_DIR_DEG = {
+    "hand_l": {"thumb": 200.0, "other": 270.0},
+    "hand_r": {"thumb": 160.0, "other": 90.0},
+}
+
+
+def finger_bone_names(arm) -> dict[str, list[str]]:
+    """Per hand role -> list of finger bone names (all descendants of the hand
+    bone, naming-agnostic so it survives CC finger-name variants). Cache once."""
+    out: dict[str, list[str]] = {}
+    for side, role in (("L", "hand_l"), ("R", "hand_r")):
+        hb = arm.data.bones.get(f"CC_Base_{side}_Hand")
+        out[role] = [b.name for b in hb.children_recursive] if hb else []
+    return out
+
+
+def _apply_finger_curl(arm, curls, finger_names) -> None:
+    """curls: hand role -> trigger 0..1. Curls each finger bone about the local
+    X-Z-plane axis at FINGER_CURL_DIR_DEG[role][group] by trigger *
+    FINGER_CURL_ANGLE (0 = rest/open), where group is 'thumb' for thumb bones
+    and 'other' for the rest. Only hands present in `curls` are touched."""
+    import math
+    import mathutils
+    pbones = arm.pose.bones
+    for role, t in curls.items():
+        dirs = FINGER_CURL_DIR_DEG.get(role)
+        if dirs is None:
+            continue
+        t = float(t)
+        eul = {}
+        for group, deg in dirs.items():
+            th = math.radians(deg)
+            axis = mathutils.Vector((math.cos(th), 0.0, math.sin(th)))
+            eul[group] = mathutils.Quaternion(
+                axis, t * FINGER_CURL_ANGLE).to_euler("XYZ")
+        for bn in finger_names.get(role, ()):
+            pb = pbones.get(bn)
+            if pb is None:
+                continue
+            pb.rotation_mode = "XYZ"
+            pb.rotation_euler = eul["thumb"] if "Thumb" in bn else eul["other"]
+
+
+def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
+               view_layer=None) -> None:
     import bpy
     if view_layer is None:
         view_layer = bpy.context.view_layer
@@ -91,5 +150,8 @@ def apply_pose(arm, rm, configuration, *, view_layer=None) -> None:
                 model.jnt_axis[jid][0], model.jnt_axis[jid][1], model.jnt_axis[jid][2]))
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = mathutils.Quaternion(axis, angle).to_euler("XYZ")
+
+    if fingers and finger_names:
+        _apply_finger_curl(arm, fingers, finger_names)
 
     view_layer.update()

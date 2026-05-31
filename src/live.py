@@ -47,6 +47,8 @@ class LiveDriver:
         self.calibration: _ovr.Calibration | None = None
         self.last_q: np.ndarray | None = None
         self.last_error: str | None = None
+        # finger bones per hand (driven by the controller trigger, not the IK)
+        self.finger_names = _apply.finger_bone_names(arm)
 
     # -- rest geometry --------------------------------------------------
     def body_rest_positions(self) -> dict[str, np.ndarray]:
@@ -90,6 +92,7 @@ class LiveDriver:
     # -- per-frame step -------------------------------------------------
     def step(self, snapshot: dict[str, np.ndarray] | None = None,
              snapshot_rot: dict[str, np.ndarray] | None = None,
+             grip: dict[str, float] | None = None,
              *, dt: float = 1.0 / 60.0, iters: int = 4):
         """One solve+apply tick. Returns True on success, False if held.
 
@@ -116,7 +119,8 @@ class LiveDriver:
             self.last_error = repr(e)
             return False
 
-        _apply.apply_pose(self.arm, self.rm, self.solver.configuration)
+        _apply.apply_pose(self.arm, self.rm, self.solver.configuration,
+                          fingers=grip, finger_names=self.finger_names)
         return True
 
     def apply_rest(self):
