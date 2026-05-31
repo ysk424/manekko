@@ -5,7 +5,64 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
-## ⚠️ START HERE — 2026-05-31（最新・これを最初に読む）
+## ⚠️ START HERE — 2026-05-31（v0.1.0「最初の完成品」・これを最初に読む）
+
+**いまの状態**: `dist/manekko-0.1.0.zip` ＝ **最初の完成品（実機で全身位置IK＋全ロール回転が動作）**。
+コミット/プッシュ済み。**フェイス(iPhone ARKit)は別プロジェクトで本リポ対象外**。残るは**手首と指の
+握り/伸ばし**（コントローラのボタン/トラックパッドで駆動する案を検討、本ファイル末尾「次の検討」参照）。
+使い込むと不具合が出うる→カスタムmocap方針で都度実験対応。
+
+### v0.1.0 で何ができるか（実機検証済み）
+- SteamVR の VIVE Tracker＋コントローラ → mink 差分IK → CCキャラを全身ライブ駆動＋Action録画。
+- **IKターゲット=7点（位置＋回転）**: hip, head, hand_l/r(=手首), foot_l/r, chest。
+- 回転検証済み: 足を伸ばしたまま捻れば追従、T/Aポーズで腕を捻れる。詳細は `docs/rotation_notes.md`。
+
+### ⚠️ 本番パスの最重要事実（過去に地雷を踏んだ箇所）
+**ライブ駆動の実体は `src/ops.py` の `MANEKKO_OT_start` modal → `_read_valid`**。
+- ops は**自前で** `getDeviceToAbsoluteTrackingPose` を読み、`openvr_reader.world_to_blender`(z,x,y) で変換。
+- **`TrackerReader` スレッド（`openvr_reader._loop`）は拡張では未使用**（開発MCP用）。reader と ops は
+  座標変換が違う（reader=`svr_to_blender`(x,-z,y) / ops=`world_to_blender`(z,x,y)、90°差）。
+- かつて `BONE_OFFSET_M`（ボーンオフセット）が reader にしか配線されず**本番で死んでいた**。v0.0.9 で
+  `ops._read_valid` に `correct_to_bone` を配線して解消。**ops 側を直さないと本番に効かない**を肝に銘じる。
+
+### パイプライン（位置＋回転）
+1. `ops._read_valid`: 各 pose を読む → `correct_to_bone`（法線方向に骨へ寄せる, SteamVR系で適用）→
+   位置=`world_to_blender`、姿勢=`world_rot_to_blender`(同じ軸写像 W@R) を `(pos, rot)` で返す。
+2. `LiveDriver.calibrate`: Aポーズで位置オフセット＋**回転マウントオフセット** `M=R_raw_apose⁻¹·R_rest` を
+   登録（`Calibration.rot_offset`、CONFIGにJSON保存・Start時自動ロード・旧JSONは位置のみで後方互換）。
+   **回転は演者側(トラッカー局所)で扱う**＝Blender世界系の面倒な変換を避ける（位置キャリブが立ち位置を
+   吸収するのと同じ構図。これがこの実装の勘所＝オーナー合意）。
+3. `LiveDriver.step`: 位置=`raw+offset`、姿勢=`R_raw_live·M` を `solver.set_target_poses` へ。
+4. `solver`: 各ロールに position FrameTask（hand=full weight）＋**全ロール orientation_cost=1e-1**。
+   `orientation_roles` から1ロール外せばその部位だけ position-only に戻る（**切り分け用に設計**）。daqp QP。
+5. `apply`: **FK関節角のみ**適用（ボール=quat→euler, ヒンジ=軸角, ルート=world pos+quat）。**無変更で回転対応**
+   （hip=ルートは元々 quat、head等ボールは euler を適用済み）。非ルートに world行列/位置/scaleを焼くの禁止。
+
+### トラッカー配置（物理・確定）
+旧 elbow×2→**手首**(hand_l/r 駆動)、旧 knee_l→**胸**(chest=CC_Base_Spine02)、旧 knee_r=**休止/スペア**、
+コントローラ×2→**手のひら(palm_l/r)**＝IK非対象（録画ビープ用／**将来の手首・指の入力源**）。膝・肘は IK ドロップ。
+`openvr_reader.SERIAL_TO_ROLE`/`BONE_OFFSET_M` 参照。
+
+### チューニングノブ（全部「マッピング＋定数」）
+- `rig.PERFORMER_ARM_M=0.55 / PERFORMER_THIGH_M=0.47 / GLOBAL_HEIGHT_SCALE=1.80/1.59`（演者寸法）
+- `apply.ROOT_HEIGHT_SCALE=1.0`（キャラ root 高さ配置）
+- `solver.orientation_cost=1e-1`（弱め設定。追従弱→上げる0.3-0.5 / 暴れる→下げる）
+- `solver.orientation_roles`（回転させる部位。捻れ・過剰拘束が出た部位を外す＝足が捻れたら足だけ外す等）
+- `openvr_reader.BONE_OFFSET_M`（head8 hip6 chest6 wrist3 foot1 cm、トラッカー法線方向に骨へ寄せる量）
+
+### ビルド/リリース
+`blender --command extension build --source-dir . --output-dir dist`（PowerShellは exe フルパス指定）。
+版を上げる→ビルド→旧zip削除（検証済みは fallback で一時保持可）。**動作検証が通るたび commit/push**。
+
+### 次の検討（コミット後に案出し予定 → 本ファイル/別ドキュメントに追記）
+- **手首＋指の握り/伸ばし**: トラッカーは6点で埋まり、手の細かい動きは残る。コントローラ(palm_l/r)の
+  **ボタン/トラックパッド/トリガー**で「握る/開く」「手首ひねり」を駆動する案。トリガーはレガシー
+  OpenVR では取れない（IVRInput 必要・過去に断念）ので、入力API含めて要設計。
+- **フェイス**: iPhone ARKit、**別プロジェクト**。本リポでは扱わない。
+
+---
+
+## START HERE（旧·P1着手＋トラッカー再配置計画時）— 2026-05-31 午前
 
 **いまの状態**: `dist/manekko-0.0.6.zip` をビルド済みだが **未実機テスト**（オーナーは水泳へ、~6h後に戻って
 Blender+SteamVR 起動→0.0.6 をインストール→Start でライブ確認、から再開予定）。0.0.6 には**未コミットの

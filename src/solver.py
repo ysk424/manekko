@@ -27,11 +27,13 @@ class ManekkoSolver:
         hand_position_cost: float = 1.0,
         # Roles that additionally track ORIENTATION, not just position. Staged
         # rollout of rotation (CLAUDE.md "角度は最後に・段階的に"): head + hip
-        # first — single rigid pieces (the pelvis root sets the body facing, the
-        # head its gaze), no twist coupling. Expand to feet/limbs once verified.
-        # The orientation target comes from the tracker pose, registered at the
-        # A-pose (Calibration.rot_offset); see live.LiveDriver.step.
-        orientation_roles: tuple[str, ...] = ("head", "hip"),
+        # were verified first (v0.0.10), then expanded to ALL IK targets
+        # (v0.0.11). The orientation target comes from the tracker pose,
+        # registered at the A-pose (Calibration.rot_offset); see
+        # live.LiveDriver.step. To isolate a misbehaving part, drop its role from
+        # this tuple (falls back to position-only for that role).
+        orientation_roles: tuple[str, ...] = (
+            "head", "hip", "chest", "hand_l", "hand_r", "foot_l", "foot_r"),
         # Kept low vs position_cost (1.0): a gentle orientation pull so a slightly
         # off registration can't whip the body around (the owner's "ぐるぐる回る"
         # risk). Raise once head+hip prove stable.
