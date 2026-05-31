@@ -25,30 +25,37 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-# The 10 tracker roles, in the order rig.TRACKER_TO_BONE expects.
+# Tracker roles read each frame. The IK position targets are the subset present
+# in rig.TRACKER_TO_BONE (hip, head, hand_l/r, foot_l/r, chest); palm_l/r are
+# read (controllers, for trigger/record + future hand orientation) but NOT
+# targeted by the solver.
 ROLES: tuple[str, ...] = (
     "hip", "head",
     "hand_l", "hand_r",
     "foot_l", "foot_r",
-    "elbow_l", "elbow_r",
-    "knee_l", "knee_r",
+    "chest",
+    "palm_l", "palm_r",
 )
 
-# Known VIVE Tracker serial -> role assignments. Partially known; the rest are
-# assigned at runtime via TrackerReader.assign() / the N-panel. Serials are the
+# Known VIVE Tracker serial -> role assignments. Serials are the
 # Prop_SerialNumber_String values reported by OpenVR.
+#
+# Tracker layout v0.0.8 (2026-05-31, "総合案その1"): the two former ELBOW trackers
+# moved onto the WRISTS and now drive the hand IK targets (replacing the imprecise
+# controller wrist position). The former knee_l tracker moved onto the CHEST (new
+# role -> CC_Base_Spine02). knee_r is RESTING (spare, commented out). The two VIVE
+# controllers move to the PALMS: they still carry the trigger (recording) and are
+# the future hand-orientation source, but are NOT IK position targets (role
+# palm_*, absent from rig.TRACKER_TO_BONE).
 SERIAL_TO_ROLE: dict[str, str] = {
-    # hands are the two VIVE controllers (they also carry the trigger button
-    # used to define the A-rest pose / start-stop recording); the other 8 are
-    # VIVE Tracker 3.0. Confirmed by floor line-up 2026-05-30.
-    "LHR-9EFF8645": "hand_r",   # R controller
-    "LHR-0B253252": "hand_l",   # L controller
+    "LHR-9EFF8645": "palm_r",   # R controller -> right palm (trigger/record; future hand orient)
+    "LHR-0B253252": "palm_l",   # L controller -> left palm
     "LHR-CC5F5D2C": "head",
     "LHR-15E5788A": "hip",      # drives the root bone's global position
-    "LHR-4CEBC3D1": "elbow_r",
-    "LHR-8CBC92B3": "elbow_l",
-    "LHR-31597DDE": "knee_r",
-    "LHR-4BDF9009": "knee_l",
+    "LHR-4CEBC3D1": "hand_r",   # was elbow_r tracker -> now on RIGHT WRIST (hand IK target)
+    "LHR-8CBC92B3": "hand_l",   # was elbow_l tracker -> now on LEFT WRIST (hand IK target)
+    "LHR-4BDF9009": "chest",    # was knee_l tracker -> now on CHEST (CC_Base_Spine02)
+    # "LHR-31597DDE": "knee_r", # was knee_r tracker -> RESTING (spare); re-enable here
     "LHR-60481EF9": "foot_r",
     "LHR-9E4926DA": "foot_l",
 }
@@ -107,18 +114,18 @@ def _mat34_rot(m) -> np.ndarray:
 # per-role distance. Measured empirically 2026-05-31 by laying all 8 VIVE Tracker
 # 3.0 flat with the normal to the ceiling: the local axis pointing up was -Z for
 # every unit (dot 0.95-1.0). The bone sits on the FLOOR side, so the toward-bone
-# direction is local +Z. Controllers (hands) are held, so no correction.
+# direction is local +Z. Controllers (palms) are gripped, so no correction.
 # Applied in SteamVR frame, before svr_to_blender (so it composes with any later
 # yaw/axis swap). Because snapshot() returns corrected positions, both the A-pose
 # calibration capture and the live targets use the same corrected frame.
 TRACKER_NORMAL_LOCAL = np.array([0.0, 0.0, 1.0])  # local axis toward the bone (floor side)
 BONE_OFFSET_M: dict[str, float] = {
     "head": 0.08,
-    "hip": 0.03,
-    "elbow_l": 0.03, "elbow_r": 0.03,
-    "knee_l": 0.03, "knee_r": 0.03,
+    "hip": 0.06,
+    "chest": 0.06,                    # tracker on the sternum (v0.0.8, adjusted to 6cm)
+    "hand_l": 0.03, "hand_r": 0.03,   # trackers now strapped on the WRISTS (v0.0.8) — verify live
     "foot_l": 0.01, "foot_r": 0.01,
-    # hand_l / hand_r: VIVE controllers, gripped in the hand -> no correction.
+    # palm_l / palm_r: VIVE controllers, gripped -> no correction (and not IK targets).
 }
 
 

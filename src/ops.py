@@ -111,7 +111,13 @@ class MANEKKO_OT_start(bpy.types.Operator):
             p = poses[idx]
             if p.bPoseIsValid:
                 m = p.mDeviceToAbsoluteTracking
-                snap[role] = ovr.world_to_blender((m[0][3], m[1][3], m[2][3]))
+                # Push the raw tracker position along its local normal toward the
+                # bone (BONE_OFFSET_M[role]) in the SteamVR frame, BEFORE the axis
+                # swap — same as openvr_reader._loop. This was previously skipped
+                # here, so the bone offsets were dead in the live extension (the
+                # offsets only ran in the unused TrackerReader thread).
+                pos = ovr.correct_to_bone(role, ovr._mat34_rot(m), ovr._mat34_pos(m))
+                snap[role] = ovr.world_to_blender(pos)
         return snap
 
     def _drive_snapshot(self, valid):

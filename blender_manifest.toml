@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "manekko"
-version = "0.0.6"
+version = "0.0.9"
 name = "Manekko"
 tagline = "VIVE Tracker full-body mocap → CC character via mink IK"
 maintainer = "Yoshihiko Tsukamoto <ysk424@hotmail.com>"

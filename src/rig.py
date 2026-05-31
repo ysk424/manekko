@@ -6,8 +6,8 @@ extracts that chain from the live Blender armature (in metric world space)
 and emits an MJCF whose bodies are world-axis-aligned at the rest (A) pose,
 so the rest configuration is all-identity joint rotations.
 
-Tracker roles (10): head, hip, hand_l/r, foot_l/r, elbow_l/r, knee_l/r.
-Each maps to a MuJoCo body that mink drives with a FrameTask.
+IK target roles (v0.0.8): hip, head, hand_l/r (wrists), foot_l/r, chest.
+Each maps to a MuJoCo body that mink drives with a position-only FrameTask.
 
 Units: Blender armature object scale is 0.01, scene is metric → world-space
 bone coordinates (arm.matrix_world @ head_local) are already in meters,
@@ -57,6 +57,7 @@ TRACKER_TO_BONE: dict[str, str] = {
     "hand_r":  "CC_Base_R_Hand",
     "foot_l":  "CC_Base_L_Foot",
     "foot_r":  "CC_Base_R_Foot",
+    "chest":   "CC_Base_Spine02",   # tracker on the sternum (v0.0.8, "総合案その1")
     # elbow trackers DROPPED from the IK (v0.0.5, 2026-05-31). The arm is over-
     # constrained (Upperarm ball 3 + Forearm hinge 1 = 4 DOF vs elbow 3 + wrist 3
     # = 6); the elbow + the imperfect controller wrist target fought and pinned
@@ -65,8 +66,15 @@ TRACKER_TO_BONE: dict[str, str] = {
     # openvr_reader (just not targeted) so re-enabling later = uncomment these:
     # "elbow_l": "CC_Base_L_Forearm",
     # "elbow_r": "CC_Base_R_Forearm",
-    "knee_l":  "CC_Base_L_Calf",
-    "knee_r":  "CC_Base_R_Calf",
+    # knee trackers ALSO DROPPED from the IK (v0.0.7, 2026-05-31). After the
+    # performer-sized model (v0.0.6) made the arm solve stable with the elbow
+    # dropped, we drop the knees too: the legs are driven by the foot targets and
+    # the PostureTask resolves the knee swivel toward the A-pose. The knee trackers
+    # are still read by openvr_reader (just not targeted). Re-enable = uncomment:
+    # RISK: under load / deep knee-bend the Posture may mis-guess knee direction —
+    # if so, put a knee tracker back here.
+    # "knee_l":  "CC_Base_L_Calf",
+    # "knee_r":  "CC_Base_R_Calf",
 }
 
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
