@@ -38,6 +38,19 @@ class MANEKKO_PT_main(Panel):
         elif recording:
             layout.label(text="recording", icon="REC")
 
+        # --- Controller MENU workflow (v0.2.0) ---------------------------
+        layout.separator()
+        box = layout.box()
+        mode = getattr(wm, "manekko_mode", "CALIB")
+        box.label(text="Controller MENU", icon="MOUSE_LMB")
+        row = box.row()
+        row.label(text="Mode:")
+        row.label(text=("RECORD" if mode == "RECORD" else "CALIBRATION"),
+                  icon=("REC" if mode == "RECORD" else "FILE_REFRESH"))
+        box.label(text="L = mode toggle   R = act", icon="INFO")
+        box.prop(wm, "manekko_wav_path", text="Cue WAV")
+        box.prop(wm, "manekko_smooth_frames", text="Smooth +/-")
+
 
 _classes = (MANEKKO_PT_main,)
 

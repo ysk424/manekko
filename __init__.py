@@ -26,7 +26,7 @@ import sys
 import zipfile
 
 import bpy
-from bpy.props import BoolProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import WindowManager
 
 
@@ -75,6 +75,21 @@ def register() -> None:
         name="Manekko Running", default=False, options={"SKIP_SAVE"})
     WindowManager.manekko_recording = BoolProperty(
         name="Manekko Recording", default=False, options={"SKIP_SAVE"})
+    # Controller-MENU workflow (v0.2.0): left MENU toggles this mode, right MENU
+    # acts within it (calib = immediate calibrate; record = start/punch-in/out).
+    WindowManager.manekko_mode = EnumProperty(
+        name="Manekko Mode",
+        items=[("CALIB", "Calibration", "Right MENU = immediate calibrate"),
+               ("RECORD", "Record", "Right MENU = start / punch-in / punch-out")],
+        default="CALIB", options={"SKIP_SAVE"})
+    # WAV cue played when the timeline crosses frame = fps*10 (preloaded on Start
+    # to avoid latency). The performer times their motion to this cue.
+    WindowManager.manekko_wav_path = StringProperty(
+        name="Cue WAV", subtype="FILE_PATH", default="")
+    # +/- this many frames are crossfaded at each punch-in/out boundary in the
+    # post-recording batch smooth (12 total at the default 6).
+    WindowManager.manekko_smooth_frames = IntProperty(
+        name="Smooth Frames", default=6, min=0, max=60)
     ops.register()
     ui.register()
 
@@ -82,7 +97,8 @@ def register() -> None:
 def unregister() -> None:
     ui.unregister()
     ops.unregister()
-    for attr in ("manekko_running", "manekko_recording"):
+    for attr in ("manekko_running", "manekko_recording", "manekko_mode",
+                 "manekko_wav_path", "manekko_smooth_frames"):
         try:
             delattr(WindowManager, attr)
         except Exception:

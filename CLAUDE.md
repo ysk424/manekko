@@ -5,6 +5,34 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
+## ⚠️ START HERE — 2026-06-02（v0.2.2 ＝コントローラMENU録画ワークフロー・**実機検証済み・完成**）
+
+**いまの状態（2026-06-02 更新）**: `dist/manekko-0.2.2.zip` ＝**実機検証済み・完成・commit/push 済み**。
+パンチイン/アウト録画＋平滑化（既定6フレームで「かなり普通に見える」＝オーナー評）＋音楽キュー＋停止時の
+音停止、すべて動作確認。0.1.5 zip は前バージョンのフォールバックとして残置。**ここで一区切り＝再び休眠**。
+
+**何を足したか**（N-パネルのボタンは従来どおり残置＝フォールバック。詳細 `docs/recording_workflow.md`）:
+- **左右コントローラの MENU ボタン**で録画/キャリブを操作（レガシー `getControllerState`, ApplicationMenu=`0x2`、
+  立ち上がりエッジ検出。左=palm_l, 右=palm_r）。
+- **左MENU**＝モードトグル `CALIBRATION`(既定)⇄`RECORD`。RECORD 入場でカーソル→1F＋右サイクル再アーム（＝リテイク
+  リセット）。**右MENU**＝CALIBでは**即時キャリブ**（5秒待ち無し）、RECORDでは3押しサイクル（1=1Fから再生/
+  2=パンチイン録画開始/3=パンチアウト停止＋バッチ平滑化）。
+- **タイムライン**（fps連動・24fps時の値）: 1〜24F=レスト（MD服初期化）、24〜120F=レスト→動作をsmoothstep、
+  120F〜=本番、**240F で wav キュー再生**（`aud` 事前ロード）。
+- **平滑化は全て録画後バッチ**（`src/postproc.py`、リアルタイムease-in無し）。先頭ランプ（初回のみ）＋パンチ
+  イン/アウト境界±N(既定6)クロスフェード。**位置も対象**。クォータニオンは成分lerp（slerp非）。
+- 新プロパティ: `manekko_mode`/`manekko_wav_path`/`manekko_smooth_frames`（`__init__.py`）。
+
+- **音楽はストップ時に停止**（0.2.2）: 再生ハンドルを保持し、パンチアウト/Stop/巻き戻し/録画モード離脱で
+  `_stop_audio`。次回プレイの 240F で再発火。
+
+**既知の留意点（実用上は問題なし）**: ①音(`aud`実時間)と frame_set ペースのドリフトは原理上あり得る（solve が
+重いと）が実機で問題化せず。②バッチ平滑化のクォータニオンは成分lerp（既定6Fで自然＝問題なし）。
+**Blender 5.1 のスロット式 Action 罠**: `action.fcurves` は廃止。fカーブは slot の channelbag 内
+（`ops._action_fcurves` がレガシー/スロット両対応で収集）。録画キーの確認は Dope Sheet→Action Editor。
+
+---
+
 ## ⚠️ START HERE — 2026-05-31（v0.1.5 完成・公開済み・これを最初に読む）
 
 **いまの状態**: `dist/manekko-0.1.5.zip` ＝ **完成品。コミット/プッシュ済み、GitHub を public 化済み**

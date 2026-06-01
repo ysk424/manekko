@@ -31,8 +31,20 @@ COUNTDOWN = 5.0
 OPENVR_APP_TYPE = "overlay"   # "overlay" | "background"
 
 # Shared state between the running modal and the button operators (one session).
+#   mode      : "calib" | "record"  (left MENU toggles)
+#   rec_state : "idle" | "playing" | "recording" (right MENU cycles, record mode)
+#   btn_prev  : per-controller MENU pressed state, for rising-edge detection
+#   punch_*   : recorded segment boundary frames, kept for batch smoothing
+#   audio_done: WAV cue already fired this playback
 _S = {"stop": False, "calib_at": None, "record_at": None, "recording": False,
-      "ctrl": {}, "app_type": ""}
+      "ctrl": {}, "app_type": "",
+      "mode": "calib", "rec_state": "idle",
+      "btn_prev": {"palm_l": False, "palm_r": False},
+      "punch_in": None, "punch_out": None, "audio_done": False}
+
+# Controller button mask (VIVE wand): ApplicationMenu = bit 1 (see
+# docs/hands_and_input.md). Left controller = palm_l, right = palm_r.
+MENU_MASK = 0x2
 
 
 def _init_vr(openvr):
@@ -61,6 +73,22 @@ def _beep(freq: int, ms: int) -> None:
 def _mods():
     from . import live as _live, openvr_reader as _ovr, calibration_io as _cio
     return _live, _ovr, _cio
+
+
+def _load_wav(path):
+    """Preload a WAV as an aud.Sound (no-op-safe). Returns (device, sound) or
+    (None, None). Done up front so playback at the cue frame has no latency."""
+    if not path:
+        return None, None
+    try:
+        import os
+        import aud
+        p = bpy.path.abspath(path)
+        if not os.path.isfile(p):
+            return None, None
+        return aud.Device(), aud.Sound(p)
+    except Exception:  # noqa: BLE001
+        return None, None
 
 
 def _find_armature(context):
@@ -115,10 +143,17 @@ class MANEKKO_OT_start(bpy.types.Operator):
         context.view_layer.update()
 
         _S.update({"stop": False, "calib_at": None, "record_at": None,
-                   "recording": False})
+                   "recording": False, "mode": "calib", "rec_state": "idle",
+                   "btn_prev": {"palm_l": False, "palm_r": False},
+                   "punch_in": None, "punch_out": None, "audio_done": False})
+        self._old_seg = {}
         wm = context.window_manager
         wm.manekko_running = True
         wm.manekko_recording = False
+        wm.manekko_mode = "CALIB"
+        # Preload the cue WAV (frame fps*10) so playback has no startup latency.
+        self._aud_dev, self._aud_snd = _load_wav(getattr(wm, "manekko_wav_path", ""))
+        self._aud_handle = None
         fps = max(1, int(getattr(context.scene.render, "fps", 30)))
         self.timer = wm.event_timer_add(1.0 / fps, window=context.window)
         wm.modal_handler_add(self)
@@ -221,6 +256,7 @@ class MANEKKO_OT_start(bpy.types.Operator):
             now = time.perf_counter()
             valid, valid_rot = self._read_valid()
             _S["ctrl"] = self._read_buttons()   # option-B spike readout
+            self._handle_menu_buttons(context, valid, valid_rot)
 
             if _S["calib_at"] is not None and now >= _S["calib_at"]:
                 _S["calib_at"] = None
@@ -235,17 +271,181 @@ class MANEKKO_OT_start(bpy.types.Operator):
                 wm.manekko_recording = True
                 _beep(1175, 400)
 
-            snap = self._drive_snapshot(valid)
-            if snap:
-                grip = self._grip_from_ctrl(_S["ctrl"])
-                self.driver.step(snap, valid_rot, grip, iters=4)
-                if _S["recording"]:
-                    self._keyframe(context)
-                    context.scene.frame_set(context.scene.frame_current + 1)
+            self._maybe_play_audio(context)
+
+            if _S["mode"] == "record" and _S["rec_state"] == "playing":
+                # Pre-punch-in: play back the existing take (no live drive, no
+                # keys) so the performer can time the punch-in to the cue.
+                f = context.scene.frame_current
+                if f < context.scene.frame_end:
+                    context.scene.frame_set(f + 1)
                 _redraw(context)
+            else:
+                snap = self._drive_snapshot(valid)
+                if snap:
+                    grip = self._grip_from_ctrl(_S["ctrl"])
+                    self.driver.step(snap, valid_rot, grip, iters=4)
+                    if _S["recording"]:
+                        self._keyframe(context)
+                        context.scene.frame_set(context.scene.frame_current + 1)
+                    _redraw(context)
         return {"PASS_THROUGH"}
 
+    # -- controller MENU workflow (v0.2.0) ------------------------------
+    def _handle_menu_buttons(self, context, valid, valid_rot):
+        """Rising-edge on each controller's ApplicationMenu button. Left =
+        mode toggle; right = act within the current mode."""
+        ctrl = _S["ctrl"]
+        for role, side in (("palm_l", "left"), ("palm_r", "right")):
+            d = ctrl.get(role)
+            pressed = bool(d and "btn" in d and (int(d["btn"]) & MENU_MASK))
+            prev = _S["btn_prev"].get(role, False)
+            _S["btn_prev"][role] = pressed
+            if pressed and not prev:
+                if side == "left":
+                    self._on_left_menu(context)
+                else:
+                    self._on_right_menu(context, valid, valid_rot)
+
+    def _on_left_menu(self, context):
+        if _S["mode"] == "calib":
+            _S["mode"] = "record"
+            self._enter_record_mode(context)
+        else:
+            # leaving record mode: stop & smooth any in-progress take
+            if _S["rec_state"] == "recording":
+                self._end_recording(context)
+            self._stop_audio()
+            _S["mode"] = "calib"
+            _S["rec_state"] = "idle"
+        context.window_manager.manekko_mode = _S["mode"].upper()
+        _beep(784, 120)
+
+    def _enter_record_mode(self, context):
+        """Rewind to frame 1 and re-arm the right-button cycle (this is also the
+        retake reset: toggle calib->record to rewind & re-arm)."""
+        self._stop_audio()
+        context.scene.frame_set(1)
+        _S.update({"rec_state": "idle", "recording": False,
+                   "punch_in": None, "punch_out": None, "audio_done": False})
+        self._old_seg = {}
+        wm = context.window_manager
+        wm.manekko_recording = False
+        # pick up a WAV path changed since Start (preload again, no latency)
+        self._aud_dev, self._aud_snd = _load_wav(getattr(wm, "manekko_wav_path", ""))
+
+    def _on_right_menu(self, context, valid, valid_rot):
+        if _S["mode"] == "calib":
+            if valid:
+                self.driver.calibrate(valid, valid_rot)
+                self._cio.save(self.driver.arm, self.driver.calibration)
+                _beep(1175, 400)
+            return
+        st = _S["rec_state"]
+        if st == "idle":                       # press 1: start playback @ 1F
+            self._stop_audio()
+            context.scene.frame_set(1)
+            _S["audio_done"] = False
+            _S["rec_state"] = "playing"
+            _beep(660, 200)
+        elif st == "playing":                  # press 2: punch-in
+            self._begin_recording(context)
+        elif st == "recording":                # press 3: punch-out
+            self._end_recording(context)
+
+    def _action_fcurves(self):
+        """(action, [fcurves]) for the armature's active action. Handles both
+        legacy actions (``action.fcurves``) and Blender 4.4+ slotted actions
+        (fcurves live in the active slot's channelbag, ``action.fcurves`` gone)."""
+        arm = self.driver.arm
+        adt = getattr(arm, "animation_data", None)
+        if not adt or not adt.action:
+            return None, []
+        act = adt.action
+        fcurves = []
+        slot = getattr(adt, "action_slot", None)
+        try:
+            for layer in act.layers:
+                for strip in layer.strips:
+                    try:
+                        bag = strip.channelbag(slot) if slot is not None else None
+                    except Exception:  # noqa: BLE001
+                        bag = None
+                    if bag is not None:
+                        fcurves.extend(bag.fcurves)
+        except Exception:  # noqa: BLE001
+            pass
+        if not fcurves and hasattr(act, "fcurves"):
+            try:
+                fcurves = list(act.fcurves)
+            except Exception:  # noqa: BLE001
+                fcurves = []
+        return act, fcurves
+
+    def _begin_recording(self, context):
+        f = context.scene.frame_current
+        _S["punch_in"] = f
+        # preserve the existing take over the to-be-overwritten region so the
+        # punch-in/out crossfade has the 'old' curve to blend against
+        from . import postproc
+        _, fcurves = self._action_fcurves()
+        self._old_seg = postproc.sample_segment(fcurves, f)
+        _S["recording"] = True
+        _S["rec_state"] = "recording"
+        context.window_manager.manekko_recording = True
+        _beep(1175, 400)
+
+    def _end_recording(self, context):
+        _S["punch_out"] = context.scene.frame_current
+        _S["recording"] = False
+        _S["rec_state"] = "idle"
+        context.window_manager.manekko_recording = False
+        self._stop_audio()
+        _beep(988, 200)
+        try:
+            from . import postproc
+            fps = max(1, int(getattr(context.scene.render, "fps", 24)))
+            _, fcurves = self._action_fcurves()
+            postproc.smooth_take(
+                self.driver.arm, self.driver,
+                fcurves=fcurves, fps=fps,
+                punch_in=_S["punch_in"], punch_out=_S["punch_out"],
+                old_seg=getattr(self, "_old_seg", {}),
+                smooth_frames=getattr(context.window_manager,
+                                      "manekko_smooth_frames", 6))
+            context.view_layer.update()
+        except Exception as e:  # noqa: BLE001
+            self.report({"WARNING"}, f"smooth failed: {e!r}")
+
+    def _maybe_play_audio(self, context):
+        """Fire the cue WAV once, when the timeline crosses frame fps*10 during
+        record-mode playback or recording."""
+        if _S.get("audio_done") or _S["mode"] != "record":
+            return
+        if _S["rec_state"] not in ("playing", "recording"):
+            return
+        fps = max(1, int(getattr(context.scene.render, "fps", 24)))
+        if context.scene.frame_current >= fps * 10 and self._aud_snd is not None:
+            try:
+                self._aud_handle = self._aud_dev.play(self._aud_snd)
+            except Exception:  # noqa: BLE001
+                pass
+            _S["audio_done"] = True
+
+    def _stop_audio(self):
+        """Halt the cue WAV (on Stop / punch-out / rewind), so it doesn't keep
+        playing past the take."""
+        h = getattr(self, "_aud_handle", None)
+        if h is not None:
+            try:
+                h.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self._aud_handle = None
+        _S["audio_done"] = False
+
     def _finish(self, context):
+        self._stop_audio()
         try:
             context.window_manager.event_timer_remove(self.timer)
         except Exception:
@@ -260,10 +460,12 @@ class MANEKKO_OT_start(bpy.types.Operator):
         except Exception:
             pass
         _S.update({"stop": False, "calib_at": None, "record_at": None,
-                   "recording": False})
+                   "recording": False, "mode": "calib", "rec_state": "idle",
+                   "punch_in": None, "punch_out": None, "audio_done": False})
         wm = context.window_manager
         wm.manekko_running = False
         wm.manekko_recording = False
+        wm.manekko_mode = "CALIB"
         _beep(988, 200)
         return {"CANCELLED"}
 
