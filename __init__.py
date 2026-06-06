@@ -30,38 +30,60 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import WindowManager
 
 
+def _good_mujoco() -> bool:
+    """True if a REAL mujoco package is cached (not an empty namespace shadow)."""
+    m = sys.modules.get("mujoco")
+    return m is not None and getattr(m, "__file__", None) and hasattr(m, "MjModel")
+
+
 def _ensure_wheels() -> None:
     """Guarantee the bundled deps are importable, independent of Blender's wheel
-    system (which does not surface them here). No-op if they already import.
-    Extracts ./wheels/*.whl into ./_libs once (excluding numpy, never bundled)
-    and prepends it to sys.path."""
-    try:
-        import openvr  # noqa: F401
-        import mink     # noqa: F401  (pulls in mujoco)
-        return
-    except Exception:
-        pass
+    system (which does not surface them here). Extracts ./wheels/*.whl into
+    ./_libs once (excluding numpy, never bundled) and prepends it to sys.path.
+
+    Hardened (v0.3.1) against a NAMESPACE-PACKAGE SHADOW: if a directory named
+    ``mujoco`` WITHOUT ``__init__.py`` is on sys.path first (e.g. the dev-loop
+    ``Temp\\manekko_libs`` from CLAUDE.md), ``import mujoco`` caches an empty
+    namespace package (no ``__file__`` / no ``MjModel``) and every later import
+    returns that broken object -> ``module 'mujoco' has no attribute 'MjModel'``.
+    So we force ``_libs`` to the FRONT of sys.path and purge any broken
+    mujoco/mink cache before importing."""
+    if _good_mujoco():
+        try:
+            import openvr  # noqa: F401
+            return
+        except Exception:
+            pass
 
     here = os.path.dirname(__file__)
     wheels_dir = os.path.join(here, "wheels")
-    if not os.path.isdir(wheels_dir):
-        return  # nothing bundled (shouldn't happen in a built package)
-
     libs = os.path.join(here, "_libs")
-    marker = os.path.join(libs, ".extracted")
-    if not os.path.exists(marker):
-        os.makedirs(libs, exist_ok=True)
-        for whl in sorted(glob.glob(os.path.join(wheels_dir, "*.whl"))):
-            try:
-                with zipfile.ZipFile(whl) as z:
-                    z.extractall(libs)
-            except Exception as e:  # noqa: BLE001
-                print(f"[manekko] failed to extract {os.path.basename(whl)}: {e!r}")
-        with open(marker, "w") as f:
-            f.write("ok\n")
 
-    if libs not in sys.path:
-        sys.path.insert(0, libs)
+    if os.path.isdir(wheels_dir):
+        marker = os.path.join(libs, ".extracted")
+        if not os.path.exists(marker):
+            os.makedirs(libs, exist_ok=True)
+            for whl in sorted(glob.glob(os.path.join(wheels_dir, "*.whl"))):
+                try:
+                    with zipfile.ZipFile(whl) as z:
+                        z.extractall(libs)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[manekko] failed to extract {os.path.basename(whl)}: {e!r}")
+            with open(marker, "w") as f:
+                f.write("ok\n")
+
+    # _libs must be FIRST so the real package wins over any stray dev path.
+    if libs in sys.path:
+        sys.path.remove(libs)
+    sys.path.insert(0, libs)
+
+    # Purge a broken (namespace) mujoco shadow + its dependents so the real
+    # package under _libs is imported fresh.
+    if not _good_mujoco():
+        for name in [n for n in list(sys.modules)
+                     if n == "mujoco" or n.startswith("mujoco.")
+                     or n == "mink" or n.startswith("mink.")]:
+            del sys.modules[name]
 
 
 _ensure_wheels()

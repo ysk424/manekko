@@ -39,7 +39,8 @@ class LiveDriver:
         self.rm = _rig.build_mjcf(arm)
         self.model = mujoco.MjModel.from_xml_string(self.rm.mjcf)
         self.solver = _solver.ManekkoSolver(
-            self.model, self.rm.tracker_to_body, **(solver_kwargs or {})
+            self.model, self.rm.tracker_to_body,
+            frame_types=self.rm.frame_types, **(solver_kwargs or {})
         )
         self.solver.reset_to_rest()
         self.solver.set_targets_from_current()
@@ -56,9 +57,13 @@ class LiveDriver:
         self.solver.reset_to_rest()
         data = self.solver.configuration.data
         out = {}
-        for role, body in self.rm.tracker_to_body.items():
-            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)
-            out[role] = np.array(data.xpos[bid])
+        for role, frame in self.rm.tracker_to_body.items():
+            if self.rm.frame_types.get(role) == "site":
+                sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, frame)
+                out[role] = np.array(data.site_xpos[sid])
+            else:
+                bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, frame)
+                out[role] = np.array(data.xpos[bid])
         return out
 
     def body_rest_orientations(self) -> dict[str, np.ndarray]:
@@ -67,6 +72,9 @@ class LiveDriver:
         data = self.solver.configuration.data
         out = {}
         for role, body in self.rm.tracker_to_body.items():
+            # site roles (elbows) are position-only -> no orientation registration
+            if self.rm.frame_types.get(role) == "site":
+                continue
             bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)
             out[role] = np.array(data.xmat[bid]).reshape(3, 3)
         return out

@@ -41,11 +41,15 @@ CHAIN: list[tuple[str, str | None, str]] = [
     # spine→arms (clavicle welded to keep shoulder stable in v1)
     ("CC_Base_L_Clavicle",  "CC_Base_Spine02",     "weld"),
     ("CC_Base_L_Upperarm",  "CC_Base_L_Clavicle",  "ball"),
-    ("CC_Base_L_Forearm",   "CC_Base_L_Upperarm",  "hinge"),
+    # Forearm WELDED in this version (2026-06-07): the elbow tracker is on the
+    # upperarm and gives no forearm-bend info, so the forearm is held at its rest
+    # pose relative to the upperarm ("前腕は常にレストポーズ"). Revert to "hinge"
+    # when the wrist tracker is brought back (separate instructions to come).
+    ("CC_Base_L_Forearm",   "CC_Base_L_Upperarm",  "weld"),
     ("CC_Base_L_Hand",      "CC_Base_L_Forearm",   "ball"),
     ("CC_Base_R_Clavicle",  "CC_Base_Spine02",     "weld"),
     ("CC_Base_R_Upperarm",  "CC_Base_R_Clavicle",  "ball"),
-    ("CC_Base_R_Forearm",   "CC_Base_R_Upperarm",  "hinge"),
+    ("CC_Base_R_Forearm",   "CC_Base_R_Upperarm",  "weld"),  # WELDED (see L_Forearm)
     ("CC_Base_R_Hand",      "CC_Base_R_Forearm",   "ball"),
 ]
 
@@ -53,29 +57,35 @@ CHAIN: list[tuple[str, str | None, str]] = [
 TRACKER_TO_BONE: dict[str, str] = {
     "hip":     "CC_Base_Hip",
     "head":    "CC_Base_Head",
-    "hand_l":  "CC_Base_L_Hand",
-    "hand_r":  "CC_Base_R_Hand",
     "foot_l":  "CC_Base_L_Foot",
     "foot_r":  "CC_Base_R_Foot",
-    "chest":   "CC_Base_Spine02",   # tracker on the sternum (v0.0.8, "総合案その1")
-    # elbow trackers DROPPED from the IK (v0.0.5, 2026-05-31). The arm is over-
-    # constrained (Upperarm ball 3 + Forearm hinge 1 = 4 DOF vs elbow 3 + wrist 3
-    # = 6); the elbow + the imperfect controller wrist target fought and pinned
-    # the elbow. We let the wrist (hand) drive the arm and the PostureTask resolve
-    # the elbow swivel toward the A-pose. The elbow trackers are still read by
-    # openvr_reader (just not targeted) so re-enabling later = uncomment these:
-    # "elbow_l": "CC_Base_L_Forearm",
-    # "elbow_r": "CC_Base_R_Forearm",
-    # knee trackers ALSO DROPPED from the IK (v0.0.7, 2026-05-31). After the
-    # performer-sized model (v0.0.6) made the arm solve stable with the elbow
-    # dropped, we drop the knees too: the legs are driven by the foot targets and
-    # the PostureTask resolves the knee swivel toward the A-pose. The knee trackers
-    # are still read by openvr_reader (just not targeted). Re-enable = uncomment:
-    # RISK: under load / deep knee-bend the Posture may mis-guess knee direction —
-    # if so, put a knee tracker back here.
-    # "knee_l":  "CC_Base_L_Calf",
-    # "knee_r":  "CC_Base_R_Calf",
+    # 2026-06-07: the WRIST trackers (hand_l/r) are REMOVED from the IK this
+    # version — still read by openvr_reader, but no FrameTask. They return later
+    # via a MuJoCo-FK post-correction (separate instructions). The CHEST target
+    # is also dropped: that tracker is now an ELBOW (see ELBOW_SITE_BONE). The
+    # chest bone (Spine02) is still solved implicitly from the 4 torso/arm
+    # targets (hip, head, elbow_l, elbow_r) via the welded clavicles.
+    #   "hand_l":  "CC_Base_L_Hand",   # wrist tracker — deferred
+    #   "hand_r":  "CC_Base_R_Hand",
+    #   "chest":   "CC_Base_Spine02",  # repurposed to elbow_l
+    # knee trackers stay DROPPED (legs driven by the foot targets; Posture
+    # resolves the knee swivel toward the A-pose). knee_r's tracker is now an
+    # elbow (see ELBOW_SITE_BONE).
+    #   "knee_l":  "CC_Base_L_Calf",
 }
+
+# --- Elbow trackers (2026-06-07): targeted as SITES, not body origins ---------
+# The elbow tracker is strapped on the UPPERARM, ~6 cm proximal of the elbow
+# joint. The upperarm bone is 0.30 m, so the tracker sits at ELBOW_SITE_M = 0.24
+# along the upperarm from the shoulder. We add a MuJoCo <site> there and drive it
+# with a position-only FrameTask, so the IK target lands exactly where the puck
+# is (angular gain ~1). The site constrains only the shoulder (Upperarm ball
+# direction); the welded forearm follows at rest. The site name == the role.
+ELBOW_SITE_BONE: dict[str, str] = {
+    "elbow_l": "CC_Base_L_Upperarm",
+    "elbow_r": "CC_Base_R_Upperarm",
+}
+ELBOW_SITE_M = 0.24   # distance from the shoulder along the upperarm to the puck
 
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
 
@@ -110,13 +120,12 @@ PERFORMER = {
     "shoulder_height":     1.45,   # floor -> shoulder joint (acromion)
     "hip_half_width":      0.135,  # body center -> hip joint, lateral (0.27 / 2)
     "shoulder_half_width": 0.20,   # body center -> shoulder joint, lateral (0.40 / 2)
-    "upperarm":            0.28,   # shoulder -> elbow
-    # elbow -> wrist TRACKER (not the wrist bone end). The IK target is the
-    # tracker, so the model lever arm must equal elbow->tracker, not the anatomical
-    # forearm. The wrist tracker sits ~4cm proximal of the wrist joint (the ~8cm
-    # puck end is not the bone end), so anatomical 0.30 -> tracker lever 0.26. A
-    # shorter model lever raises the angular gain (phi = L_track/L_model * theta),
-    # which fixes "the arm doesn't rise enough". 2026-06-06, found by moving.
+    "upperarm":            0.30,   # shoulder -> elbow joint (real bone, 2026-06-07).
+                                   # The elbow tracker sits at ELBOW_SITE_M=0.24
+                                   # along this; the elbow joint itself is FK.
+    # forearm: NOT a target this version (welded, held at rest). Value is only
+    # cosmetic placement of the welded forearm/hand. Restore the tracker-lever
+    # reasoning here when the wrist tracker returns.
     "forearm":             0.26,
     "thigh":               0.47,   # hip joint -> knee
     "shin":                0.46,   # knee -> ankle
@@ -190,9 +199,10 @@ class RigModel:
     mjcf: str
     body_to_bone: dict[str, str]          # mjcf body name -> blender bone name
     bone_to_body: dict[str, str]
-    tracker_to_body: dict[str, str]       # role -> mjcf body name
+    tracker_to_body: dict[str, str]       # role -> mjcf frame name (body or site)
     rest_world: dict[str, mathutils.Matrix]  # bone -> armature/world rest matrix
     bodies: list[str] = field(default_factory=list)
+    frame_types: dict[str, str] = field(default_factory=dict)  # role -> "body"|"site"
 
 
 def _mjcf_name(bone: str) -> str:
@@ -245,6 +255,9 @@ def build_mjcf(arm) -> RigModel:
     # + per-limb scalar scales). Each body offset is built from these heads below.
     perf_head = _performer_heads(arm)
 
+    # bone -> elbow site role to emit on that body (inverse of ELBOW_SITE_BONE)
+    _site_on_bone = {bone: role for role, bone in ELBOW_SITE_BONE.items()}
+
     identity = mathutils.Quaternion()  # (1,0,0,0)
 
     def emit_body(bone: str, parent: str | None) -> ET.Element:
@@ -289,6 +302,16 @@ def build_mjcf(arm) -> RigModel:
         else:
             ET.SubElement(body, "geom", type="sphere", size="0.04")
 
+        # elbow tracker site: a point on the upperarm, ELBOW_SITE_M from the
+        # shoulder along the bone, targeted (position-only) by the elbow role.
+        site_role = _site_on_bone.get(bone)
+        if site_role is not None:
+            seg_dir = Rb_inv @ (_world_tail(arm, bone) - head_w)
+            if seg_dir.length > 1e-6:
+                site_pos = seg_dir.normalized() * ELBOW_SITE_M
+                ET.SubElement(body, "site", name=site_role,
+                              pos=_v(site_pos), size="0.02")
+
         for child in children.get(bone, []):
             body.append(emit_body(child, bone))
         return body
@@ -306,13 +329,21 @@ def build_mjcf(arm) -> RigModel:
     ET.indent(mujoco, space="  ")
     mjcf = ET.tostring(mujoco, encoding="unicode")
 
+    tracker_to_body = {role: name_of[bone] for role, bone in TRACKER_TO_BONE.items()}
+    frame_types = {role: "body" for role in tracker_to_body}
+    # elbow roles target their site (site name == role)
+    for role in ELBOW_SITE_BONE:
+        tracker_to_body[role] = role
+        frame_types[role] = "site"
+
     return RigModel(
         mjcf=mjcf,
         body_to_bone=body_to_bone,
         bone_to_body={v: k for k, v in body_to_bone.items()},
-        tracker_to_body={role: name_of[bone] for role, bone in TRACKER_TO_BONE.items()},
+        tracker_to_body=tracker_to_body,
         rest_world=rest_world,
         bodies=[name_of[b] for b, _, _ in CHAIN],
+        frame_types=frame_types,
     )
 
 

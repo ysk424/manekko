@@ -5,6 +5,35 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
+## ⚠️ START HERE — 2026-06-07（v0.3.1 ＝肘トラッカー導入・**実機未検証・要オーナー確認**）
+
+**いまの状態**: `dist/manekko-0.3.1.zip` ビルド済み・**未実機テスト**（オーナーが install→Start で確認）。
+0.2.4 zip は検証済みフォールバックとして残置。MJCF生成・site配置・XML妥当性は Blender MCP で確認済み。
+
+**v0.3.1 で wheel ブートストラップを強化**（`__init__._ensure_wheels`）: dev の `Temp\manekko_libs\mujoco`
+（`__init__.py` 無し）が先に import されると **空の名前空間 `mujoco` が `sys.modules` にキャッシュされ
+`module 'mujoco' has no attribute 'MjModel'`** になる罠を自己修復（_libs を sys.path 先頭へ強制＋壊れた
+mujoco/mink キャッシュを purge）。0.3.0 で発症→0.3.1 で修正。
+
+**何を変えたか（1関節ずつ完成方針＝今回は肩のみ）**:
+- **肘トラッカー2個を導入**＝旧chest(`LHR-4BDF9009`)→`elbow_l`、旧knee_r spare(`LHR-31597DDE`)→`elbow_r`
+  （`openvr_reader.SERIAL_TO_ROLE`）。両肘トラッカーは**上腕に装着**。
+- **肘は body原点でなく SITE で狙う**：上腕ボーン0.30mの肩から `rig.ELBOW_SITE_M=0.24`（自由端から6cm）に
+  MuJoCo `<site>` を置き、position-only FrameTask で狙う（角度ゲイン≈1）。拘束は**肩ボールの向きのみ**。
+  実装: `rig.ELBOW_SITE_BONE`＋emit_bodyのsite生成、`RigModel.frame_types`(role→body/site)、
+  `solver` が frame_type を受け取る、`live.body_rest_positions` が site_xpos対応。
+- **前腕は WELD（常にレストポーズ）**：`rig.CHAIN` の Forearm を hinge→weld。肘トラッカーは前腕の曲げ情報を
+  持たないため。**手首トラッカー復活時に hinge へ戻す**（別指示予定）。
+- **手首(hand_l/r)を mink から除外**：`TRACKER_TO_BONE` から削除（読むだけ。次ステップで MuJoCo-FK 後補正）。
+- **chest を IK から除外**：chestボーン(Spine02)は hip/head/elbow_l/elbow_r の4点＋weld鎖骨経由で暗黙に解かれる。
+- `solver.orientation_roles` 既定から chest/hands を除去（head/hip/foot_l/foot_r）。肘は position-only。
+
+**留意点 / 戻し方**: 肘は上腕の向きのみ追従＝**肘の曲げはキャラに出ない**（仕様）。site距離が合わなければ
+`ELBOW_SITE_M` を調整。法線オフセットは `BONE_OFFSET_M["elbow_*"]=0.03` 暫定。L/R は
+chest→elbow_l, knee_r→elbow_r（実機で左右逆なら SERIAL_TO_ROLE の2行を入替）。
+
+---
+
 ## ⚠️ START HERE — 2026-06-02（v0.2.2 ＝コントローラMENU録画ワークフロー・**実機検証済み・完成**）
 
 **いまの状態（2026-06-02 更新）**: `dist/manekko-0.2.2.zip` ＝**実機検証済み・完成・commit/push 済み**。

@@ -16,6 +16,7 @@ class ManekkoSolver:
         model: "mujoco.MjModel",
         tracker_to_body: dict[str, str],
         *,
+        frame_types: dict[str, str] | None = None,
         position_cost: float = 1.0,
         # Kept as a separate knob for the hands (VIVE controllers). In v0.0.4 we
         # down-weighted them to 0.2 to stop the imperfect controller wrist target
@@ -33,7 +34,10 @@ class ManekkoSolver:
         # live.LiveDriver.step. To isolate a misbehaving part, drop its role from
         # this tuple (falls back to position-only for that role).
         orientation_roles: tuple[str, ...] = (
-            "head", "hip", "chest", "hand_l", "hand_r", "foot_l", "foot_r"),
+            # 2026-06-07: chest + hands removed (no longer IK targets). Elbow
+            # roles are position-only (a point gives no orientation, and pinning
+            # upperarm twist would over-constrain — leave it to Posture).
+            "head", "hip", "foot_l", "foot_r"),
         # Kept low vs position_cost (1.0): a gentle orientation pull so a slightly
         # off registration can't whip the body around (the owner's "ぐるぐる回る"
         # risk). Raise once head+hip prove stable.
@@ -57,13 +61,14 @@ class ManekkoSolver:
         self.configuration.update(model.qpos0)
 
         hand_roles = ("hand_l", "hand_r")
+        frame_types = frame_types or {}
         self.frame_tasks: dict[str, mink.FrameTask] = {}
         for role, body in tracker_to_body.items():
             pc = hand_position_cost if role in hand_roles else position_cost
             oc = orientation_cost if role in orientation_roles else 0.0
             t = mink.FrameTask(
                 frame_name=body,
-                frame_type="body",
+                frame_type=frame_types.get(role, "body"),
                 position_cost=pc,
                 orientation_cost=oc,    # 0 = position-only (default for most roles)
                 lm_damping=1.0,

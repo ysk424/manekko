@@ -31,9 +31,9 @@ import numpy as np
 # targeted by the solver.
 ROLES: tuple[str, ...] = (
     "hip", "head",
-    "hand_l", "hand_r",
+    "elbow_l", "elbow_r",          # 2026-06-07: drive the upperarm via a site
+    "hand_l", "hand_r",            # wrist trackers: read but NOT IK targets now
     "foot_l", "foot_r",
-    "chest",
     "palm_l", "palm_r",
 )
 
@@ -52,10 +52,13 @@ SERIAL_TO_ROLE: dict[str, str] = {
     "LHR-0B253252": "palm_l",   # L controller -> left palm
     "LHR-CC5F5D2C": "head",
     "LHR-15E5788A": "hip",      # drives the root bone's global position
-    "LHR-4CEBC3D1": "hand_r",   # was elbow_r tracker -> now on RIGHT WRIST (hand IK target)
-    "LHR-8CBC92B3": "hand_l",   # was elbow_l tracker -> now on LEFT WRIST (hand IK target)
-    "LHR-4BDF9009": "chest",    # was knee_l tracker -> now on CHEST (CC_Base_Spine02)
-    # "LHR-31597DDE": "knee_r", # was knee_r tracker -> RESTING (spare); re-enable here
+    # Wrist trackers: READ but no longer IK targets (2026-06-07, deferred to a
+    # future MuJoCo-FK post-correction step). Keep them assigned so they're ready.
+    "LHR-4CEBC3D1": "hand_r",   # RIGHT WRIST (read only)
+    "LHR-8CBC92B3": "hand_l",   # LEFT WRIST (read only)
+    # Elbow trackers (2026-06-07): on the UPPERARMS, drive the elbow sites.
+    "LHR-4BDF9009": "elbow_l",  # was CHEST tracker -> now LEFT ELBOW (upperarm)
+    "LHR-31597DDE": "elbow_r",  # was knee_r spare  -> now RIGHT ELBOW (upperarm)
     "LHR-60481EF9": "foot_r",
     "LHR-9E4926DA": "foot_l",
 }
@@ -136,8 +139,8 @@ TRACKER_NORMAL_LOCAL = np.array([0.0, 0.0, 1.0])  # local axis toward the bone (
 BONE_OFFSET_M: dict[str, float] = {
     "head": 0.08,
     "hip": 0.06,
-    "chest": 0.06,                    # tracker on the sternum (v0.0.8, adjusted to 6cm)
-    "hand_l": 0.03, "hand_r": 0.03,   # trackers now strapped on the WRISTS (v0.0.8) — verify live
+    "elbow_l": 0.03, "elbow_r": 0.03,  # strapped on the upperarms — verify live
+    "hand_l": 0.03, "hand_r": 0.03,   # wrist trackers (read only this version)
     "foot_l": 0.01, "foot_r": 0.01,
     # palm_l / palm_r: VIVE controllers, gripped -> no correction (and not IK targets).
 }
