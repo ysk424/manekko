@@ -80,21 +80,109 @@ TRACKER_TO_BONE: dict[str, str] = {
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
 
 
-# --- P1: performer-sized model (build the PERFORMER's FK, not the character's) ---
-# Stage-1 cleanliness: scale each character bone SEGMENT to the performer's
-# measured length while keeping the character A-pose directions/orientations
-# (no performer armature exists; A-pose directions are a valid proxy). Joint
-# CENTERS (shoulder/hip placement) stay character ratios for now (the deferred
-# "fulcrum" fix). rest_rot is untouched, so apply.py needs no change and the
-# solved qpos becomes the performer's true joint angles -> no double conversion.
-# Set the ratios to match the character (or PERFORMER_*≈character) to fall back
-# to the pure character model. Measured 2026-05-31: performer arm
-# (shoulder->wrist) 0.55 m, thigh (hip->knee) 0.47 m, stature 1.80 m vs this CC
-# character ~1.59 m. Unmeasured bones (torso/spine/neck/shin/etc.) use the global
-# height stretch.
-PERFORMER_ARM_M = 0.55          # one side, shoulder->wrist (elbow split not needed)
-PERFORMER_THIGH_M = 0.47        # one side, hip joint->knee
-GLOBAL_HEIGHT_SCALE = 1.80 / 1.59
+# --- P2: performer-MEASURED model (build the PERFORMER's FK from real joint
+#     coordinates, not the character's proportions). 2026-06-06 rewrite. ---
+# Earlier (P1) we stretched the whole character uniformly by a single height
+# ratio (1.80/1.59) and overrode only the arm & thigh LENGTHS. That left every
+# joint CENTER (shoulder/hip placement, torso heights, shoulder/hip widths) on
+# the character's proportions -- the deferred "fulcrum" problem -- which made the
+# wrist fall short when the arm was raised (the model shoulder sat at the wrong
+# height/width). The performer is NOT proportioned like the character, so we now
+# place each joint at the performer's MEASURED world coordinate.
+#
+# Method: reconstruct each bone's HEAD position in armature/world space
+# (Z = floor height, X = lateral half-width, Y = depth) from the measurements
+# below, then build the body offsets from those. We keep from the character only:
+#   * each bone's rest ORIENTATION (rest_rot) -- the A-pose direction proxy, so
+#     apply.py is unchanged and the solved qpos stays the performer's joint angle;
+#   * the DEPTH (Y) of each joint and the intermediate spine/neck/head joint
+#     heights, which are unmeasured (the spinal curve shape). Position calibration
+#     absorbs the constant tracker<->joint offset, so this proxy is harmless.
+# Limbs (arm/leg) are walked along the character A-pose direction with the
+# performer's measured segment LENGTH; the shoulder & hip JOINTS are placed at the
+# measured height + half-width directly (the 2D placement a scalar scale can't do).
+#
+# All meters, performer, measured 2026-06-06 (stature 1.80 m). Set these to the
+# character's own joint coordinates to fall back to the pure character model.
+PERFORMER = {
+    "hip_height":          0.90,   # floor -> hip joint (greater trochanter)
+    "chest_height":        1.27,   # floor -> Spine02 origin (sternum tracker level)
+    "shoulder_height":     1.45,   # floor -> shoulder joint (acromion)
+    "hip_half_width":      0.135,  # body center -> hip joint, lateral (0.27 / 2)
+    "shoulder_half_width": 0.20,   # body center -> shoulder joint, lateral (0.40 / 2)
+    "upperarm":            0.28,   # shoulder -> elbow
+    # elbow -> wrist TRACKER (not the wrist bone end). The IK target is the
+    # tracker, so the model lever arm must equal elbow->tracker, not the anatomical
+    # forearm. The wrist tracker sits ~4cm proximal of the wrist joint (the ~8cm
+    # puck end is not the bone end), so anatomical 0.30 -> tracker lever 0.26. A
+    # shorter model lever raises the angular gain (phi = L_track/L_model * theta),
+    # which fixes "the arm doesn't rise enough". 2026-06-06, found by moving.
+    "forearm":             0.26,
+    "thigh":               0.47,   # hip joint -> knee
+    "shin":                0.46,   # knee -> ankle
+}
+
+
+def _performer_heads(arm) -> dict[str, "mathutils.Vector"]:
+    """Reconstruct each chain bone's HEAD position (armature/world meters) from
+    the performer's measured joint coordinates. See the PERFORMER notes above for
+    what is measured vs. kept from the character (depth, orientation, intermediate
+    spine joint heights)."""
+    P = PERFORMER
+    ch = {bone: _world_head(arm, bone) for bone, _, _ in CHAIN}
+    perf: dict[str, mathutils.Vector] = {}
+
+    def V(x, y, z):
+        return mathutils.Vector((x, y, z))
+
+    # --- torso: anchor hip & chest at measured heights; keep character X (center)
+    #     and Y (depth). Intermediate spine joints interpolate by char fraction. ---
+    z_hip_c, z_chest_c = ch["CC_Base_Hip"].z, ch["CC_Base_Spine02"].z
+    hipZ, chestZ = P["hip_height"], P["chest_height"]
+    rate = (chestZ - hipZ) / (z_chest_c - z_hip_c) if abs(z_chest_c - z_hip_c) > 1e-9 else 1.0
+
+    perf["CC_Base_Hip"] = V(ch["CC_Base_Hip"].x, ch["CC_Base_Hip"].y, hipZ)
+    for b in ("CC_Base_Waist", "CC_Base_Spine01"):
+        f = (ch[b].z - z_hip_c) / (z_chest_c - z_hip_c) if abs(z_chest_c - z_hip_c) > 1e-9 else 0.0
+        perf[b] = V(ch[b].x, ch[b].y, hipZ + f * (chestZ - hipZ))
+    perf["CC_Base_Spine02"] = V(ch["CC_Base_Spine02"].x, ch["CC_Base_Spine02"].y, chestZ)
+    # neck/head joints: unmeasured (the head tracker height is a surface point, not
+    # a joint) -> keep character height above the chest, scaled by the torso rate.
+    for b in ("CC_Base_NeckTwist01", "CC_Base_Head"):
+        perf[b] = V(ch[b].x, ch[b].y, chestZ + (ch[b].z - z_chest_c) * rate)
+    # pelvis weld: keep the character offset from the hip (scaled by the torso rate)
+    pb = "CC_Base_Pelvis"
+    perf[pb] = V(ch[pb].x, ch[pb].y, hipZ + (ch[pb].z - z_hip_c) * rate)
+
+    # --- shoulders + arms ---
+    for side in ("L", "R"):
+        sp, cl = "CC_Base_Spine02", f"CC_Base_{side}_Clavicle"
+        up, fo, ha = (f"CC_Base_{side}_Upperarm", f"CC_Base_{side}_Forearm",
+                      f"CC_Base_{side}_Hand")
+        sx = 1.0 if ch[up].x >= 0 else -1.0
+        shoulder = V(sx * P["shoulder_half_width"], ch[up].y, P["shoulder_height"])
+        perf[up] = shoulder
+        # clavicle (weld) sits between the chest and the shoulder by char fraction
+        denom = (ch[up] - ch[sp]).length
+        t = (ch[cl] - ch[sp]).length / denom if denom > 1e-9 else 0.5
+        perf[cl] = perf[sp] + (shoulder - perf[sp]) * t
+        # elbow & wrist: walk the character arm direction with performer lengths
+        elbow = shoulder + (ch[fo] - ch[up]).normalized() * P["upperarm"]
+        perf[fo] = elbow
+        perf[ha] = elbow + (ch[ha] - ch[fo]).normalized() * P["forearm"]
+
+    # --- hips + legs ---
+    for side in ("L", "R"):
+        th, ca, ft = (f"CC_Base_{side}_Thigh", f"CC_Base_{side}_Calf",
+                      f"CC_Base_{side}_Foot")
+        sx = 1.0 if ch[th].x >= 0 else -1.0
+        hip_joint = V(sx * P["hip_half_width"], ch[th].y, P["hip_height"])
+        perf[th] = hip_joint
+        knee = hip_joint + (ch[ca] - ch[th]).normalized() * P["thigh"]
+        perf[ca] = knee
+        perf[ft] = knee + (ch[ft] - ch[ca]).normalized() * P["shin"]
+
+    return perf
 
 
 @dataclass
@@ -153,28 +241,9 @@ def build_mjcf(arm) -> RigModel:
             axis = d_self.cross(mathutils.Vector((0.0, 0.0, 1.0)))
         return axis.normalized()
 
-    # --- P1: performer segment scales. Default = global height stretch; the two
-    # measured limbs are overridden. Scaling a body's PARENT-relative offset
-    # stretches that segment while preserving the character A-pose direction.
-    seg_scale: dict[str, float] = {bone: GLOBAL_HEIGHT_SCALE for bone, _, _ in CHAIN}
-
-    def _seglen(a: str, b: str) -> float:
-        return (_world_head(arm, a) - _world_head(arm, b)).length
-
-    for side in ("L", "R"):
-        up = f"CC_Base_{side}_Upperarm"
-        fo = f"CC_Base_{side}_Forearm"
-        ha = f"CC_Base_{side}_Hand"
-        char_arm = _seglen(up, fo) + _seglen(fo, ha)   # shoulder->elbow->wrist
-        if char_arm > 1e-6:
-            s = PERFORMER_ARM_M / char_arm
-            seg_scale[fo] = s   # offset Upperarm_head->Forearm_head == upper arm
-            seg_scale[ha] = s   # offset Forearm_head ->Hand_head    == forearm
-        th = f"CC_Base_{side}_Thigh"
-        ca = f"CC_Base_{side}_Calf"
-        char_thigh = _seglen(th, ca)
-        if char_thigh > 1e-6:
-            seg_scale[ca] = PERFORMER_THIGH_M / char_thigh   # offset Thigh->Calf == thigh
+    # P2: performer-measured joint coordinates (replaces the global height stretch
+    # + per-limb scalar scales). Each body offset is built from these heads below.
+    perf_head = _performer_heads(arm)
 
     identity = mathutils.Quaternion()  # (1,0,0,0)
 
@@ -191,10 +260,11 @@ def build_mjcf(arm) -> RigModel:
         # At rest (identity joints) this reproduces each bone's world frame, so
         # the joint qpos becomes exactly the bone-local displacement from rest.
         if parent is None:
-            pos = head_w
+            pos = perf_head[bone]   # root: absolute performer hip position
         else:
-            pos = Rpar_inv @ (head_w - _world_head(arm, parent))
-            pos = pos * seg_scale[bone]   # P1: stretch this segment to performer size
+            # P2: offset from the performer-measured heads, expressed in the parent
+            # bone frame (rest_rot kept from the character, so apply.py is unchanged).
+            pos = Rpar_inv @ (perf_head[bone] - perf_head[parent])
         quat = Rpar_inv @ Rb
         body = ET.Element("body", name=bname, pos=_v(pos), quat=_q(quat))
 
