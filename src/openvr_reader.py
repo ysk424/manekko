@@ -31,10 +31,10 @@ import numpy as np
 # targeted by the solver.
 ROLES: tuple[str, ...] = (
     "hip", "head",
-    "elbow_l", "elbow_r",          # 2026-06-07: drive the upperarm via a site
-    "hand_l", "hand_r",            # wrist trackers: read but NOT IK targets now
+    "elbow_l", "elbow_r",          # orientation-only on the upperarm (arm twist)
+    "knee_l", "knee_r",            # orientation-only on the thigh (was the wrists)
     "foot_l", "foot_r",
-    "palm_l", "palm_r",
+    "palm_l", "palm_r",            # controllers: forearm world-FK + trigger/record
 )
 
 # Known VIVE Tracker serial -> role assignments. Serials are the
@@ -52,11 +52,12 @@ SERIAL_TO_ROLE: dict[str, str] = {
     "LHR-0B253252": "palm_l",   # L controller -> left palm
     "LHR-CC5F5D2C": "head",
     "LHR-15E5788A": "hip",      # drives the root bone's global position
-    # Wrist trackers: READ but no longer IK targets (2026-06-07, deferred to a
-    # future MuJoCo-FK post-correction step). Keep them assigned so they're ready.
-    "LHR-4CEBC3D1": "hand_r",   # RIGHT WRIST (read only)
-    "LHR-8CBC92B3": "hand_l",   # LEFT WRIST (read only)
-    # Elbow trackers (2026-06-07): on the UPPERARMS, drive the elbow sites.
+    # Knee trackers (v0.4): the freed WRIST trackers moved onto the THIGHS (5 cm
+    # above the knee). The controller now drives the forearm, so the wrists are
+    # spare. orientation-only on the Thigh (see rig.KNEE_ORIENT_BONE).
+    "LHR-4CEBC3D1": "knee_r",   # was RIGHT wrist -> now RIGHT KNEE (thigh)
+    "LHR-8CBC92B3": "knee_l",   # was LEFT wrist  -> now LEFT KNEE (thigh)
+    # Elbow trackers: on the UPPERARMS, orientation-only.
     "LHR-4BDF9009": "elbow_l",  # was CHEST tracker -> now LEFT ELBOW (upperarm)
     "LHR-31597DDE": "elbow_r",  # was knee_r spare  -> now RIGHT ELBOW (upperarm)
     "LHR-60481EF9": "foot_r",
@@ -139,9 +140,12 @@ TRACKER_NORMAL_LOCAL = np.array([0.0, 0.0, 1.0])  # local axis toward the bone (
 BONE_OFFSET_M: dict[str, float] = {
     "head": 0.08,
     "hip": 0.06,
-    "elbow_l": 0.03, "elbow_r": 0.03,  # strapped on the upperarms — verify live
-    "hand_l": 0.03, "hand_r": 0.03,   # wrist trackers (read only this version)
-    "foot_l": 0.01, "foot_r": 0.01,
+    # elbow/knee are ORIENTATION-only targets -> position offset is irrelevant
+    # (no position task); left here only to nudge the (unused) calibrated point.
+    "elbow_l": 0.03, "elbow_r": 0.03,  # strapped on the upperarms
+    "knee_l": 0.03, "knee_r": 0.03,    # strapped on the thighs
+    "foot_l": 0.01, "foot_r": 0.01,    # tracker ~10cm fwd of heel; const offset
+                                       # absorbed by the A-pose position calib
     # palm_l / palm_r: VIVE controllers, gripped -> no correction (and not IK targets).
 }
 

@@ -42,7 +42,8 @@ class ManekkoSolver:
         # position target on the same ball joint, the upperarm matches the
         # tracker EXACTLY (the twist that makes "the elbow point up"). See
         # rig.ELBOW_ORIENT_BONE.
-        orientation_only_roles: tuple[str, ...] = ("elbow_l", "elbow_r"),
+        orientation_only_roles: tuple[str, ...] = (
+            "elbow_l", "elbow_r", "knee_l", "knee_r"),
         # High vs position_cost(1.0): a 3-DOF orientation target on a 3-DOF ball
         # joint has no conflict, so a firm cost makes it near-exact (measured
         # ~0.01deg error at 5.0). This is the "exact base" the owner requires.

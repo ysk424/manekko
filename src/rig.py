@@ -94,6 +94,21 @@ ELBOW_ORIENT_BONE: dict[str, str] = {
     "elbow_r": "CC_Base_R_Upperarm",
 }
 
+# --- Knee trackers (v0.4, lower-body pass): ORIENTATION-only on the THIGH -------
+# Exact mirror of the elbow: the knee tracker is strapped on the THIGH (5 cm
+# above the knee joint), so it measures the thigh's WORLD ORIENTATION directly.
+# The thigh is a 3-DOF hip ball -> drive it with an ORIENTATION-ONLY FrameTask
+# (NO position target) so it matches the tracker EXACTLY (incl. thigh twist =
+# the knee-bend plane). The 5 cm offset is irrelevant (orientation is origin-
+# independent). Unlike the arm there is NO shin tracker, so the Calf (knee hinge)
+# is still solved by mink from the FOOT position target: thigh pinned exact ->
+# knee located -> foot position bends the calf to reach. solver puts these in
+# orientation_only_roles. The freed wrist trackers now sit on the knees.
+KNEE_ORIENT_BONE: dict[str, str] = {
+    "knee_l": "CC_Base_L_Thigh",
+    "knee_r": "CC_Base_R_Thigh",
+}
+
 # --- Forearm world-FK from the CONTROLLER (v0.4) -------------------------------
 # The hand controller is held rigidly, so it measures the forearm's WORLD
 # orientation. We do NOT add it to the mink IK; instead, AFTER the solve we set
@@ -345,7 +360,7 @@ def build_mjcf(arm) -> RigModel:
     tracker_to_body = {role: name_of[bone] for role, bone in TRACKER_TO_BONE.items()}
     # elbow roles target the Upperarm BODY (orientation-only; see solver
     # orientation_only_roles). All frames are bodies now.
-    for role, bone in ELBOW_ORIENT_BONE.items():
+    for role, bone in {**ELBOW_ORIENT_BONE, **KNEE_ORIENT_BONE}.items():
         tracker_to_body[role] = name_of[bone]
     frame_types = {role: "body" for role in tracker_to_body}
 
