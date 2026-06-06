@@ -45,11 +45,57 @@ class LiveDriver:
         self.solver.reset_to_rest()
         self.solver.set_targets_from_current()
         self.reader = reader if reader is not None else _ovr.TrackerReader()
+        self._fk = self._build_fk_tables()
         self.calibration: _ovr.Calibration | None = None
         self.last_q: np.ndarray | None = None
         self.last_error: str | None = None
         # finger bones per hand (driven by the controller trigger, not the IK)
         self.finger_names = _apply.finger_bone_names(arm)
+
+    # -- world-FK (forearm from the controller, post-IK) ----------------
+    def _build_fk_tables(self) -> dict:
+        """Precompute per-FK-role: parent (upperarm) body id, forearm ball joint
+        qpos address, and the constant rest rotation of the forearm relative to
+        the upperarm (rel_rest = R_up_rest^T @ R_fore_rest, 3x3). See
+        rig.FK_ORIENT_BONE / _apply_forearm_fk."""
+        out = {}
+        for role, (fore_body, up_body) in self.rm.fk_orient.items():
+            up_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, up_body)
+            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, fore_body)
+            if up_bid < 0 or jid < 0:
+                continue
+            adr = int(self.model.jnt_qposadr[jid])
+            fore_bone = self.rm.body_to_bone[fore_body]
+            up_bone = self.rm.body_to_bone[up_body]
+            R_up_rest = np.array(self.rm.rest_world[up_bone].to_quaternion()
+                                 .to_matrix())
+            R_fore_rest = np.array(self.rm.rest_world[fore_bone].to_quaternion()
+                                   .to_matrix())
+            rel_rest = R_up_rest.T @ R_fore_rest
+            out[role] = (up_bid, adr, rel_rest)
+        return out
+
+    def _apply_forearm_fk(self, orientations: dict[str, np.ndarray]) -> None:
+        """Set each forearm ball joint so the forearm reaches the controller's
+        WORLD orientation exactly, using the ACTUAL post-solve parent (upperarm)
+        world orientation (so mink/torso error is absorbed; no accumulation).
+        q_fore = rel_rest^T @ R_up_actual^T @ R_fore_target."""
+        cfg = self.solver.configuration
+        data = cfg.data
+        q = cfg.q.copy()
+        changed = False
+        for role, (up_bid, adr, rel_rest) in self._fk.items():
+            R_target = orientations.get(role)
+            if R_target is None:
+                continue
+            R_up = np.array(data.xmat[up_bid]).reshape(3, 3)
+            Rq = rel_rest.T @ R_up.T @ np.asarray(R_target, float)
+            quat = np.zeros(4)
+            mujoco.mju_mat2Quat(quat, np.ascontiguousarray(Rq).reshape(9))
+            q[adr:adr + 4] = quat
+            changed = True
+        if changed:
+            cfg.update(q)
 
     # -- rest geometry --------------------------------------------------
     def body_rest_positions(self) -> dict[str, np.ndarray]:
@@ -69,6 +115,11 @@ class LiveDriver:
         out = {}
         for role, body in self.rm.tracker_to_body.items():
             bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body)
+            out[role] = np.array(data.xmat[bid]).reshape(3, 3)
+        # world-FK roles (controllers): rest orientation = the FOREARM rest, so
+        # Calibration registers the controller mount offset against it.
+        for role, (fore_body, _up_body) in self.rm.fk_orient.items():
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, fore_body)
             out[role] = np.array(data.xmat[bid]).reshape(3, 3)
         return out
 
@@ -119,6 +170,11 @@ class LiveDriver:
         except Exception as e:  # mink NoSolutionFound etc. -> hold last pose
             self.last_error = repr(e)
             return False
+
+        # Post-IK world-FK: set the forearms directly from the controller world
+        # orientation (reads the actual solved upperarm; no second mink pass).
+        if orientations:
+            self._apply_forearm_fk(orientations)
 
         _apply.apply_pose(self.arm, self.rm, self.solver.configuration,
                           fingers=grip, finger_names=self.finger_names)

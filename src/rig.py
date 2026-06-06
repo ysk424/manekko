@@ -41,16 +41,18 @@ CHAIN: list[tuple[str, str | None, str]] = [
     # spine→arms (clavicle welded to keep shoulder stable in v1)
     ("CC_Base_L_Clavicle",  "CC_Base_Spine02",     "weld"),
     ("CC_Base_L_Upperarm",  "CC_Base_L_Clavicle",  "ball"),
-    # Forearm WELDED in this version (2026-06-07): the elbow tracker is on the
-    # upperarm and gives no forearm-bend info, so the forearm is held at its rest
-    # pose relative to the upperarm ("前腕は常にレストポーズ"). Revert to "hinge"
-    # when the wrist tracker is brought back (separate instructions to come).
-    ("CC_Base_L_Forearm",   "CC_Base_L_Upperarm",  "weld"),
-    ("CC_Base_L_Hand",      "CC_Base_L_Forearm",   "ball"),
+    # Forearm = BALL (v0.4): a 3-DOF joint, but NOT a mink target. mink/posture
+    # parks it near rest; AFTER the solve we OVERWRITE its qpos directly from the
+    # controller's world orientation (world-FK; see FK_ORIENT_BONE + live._apply_
+    # forearm_fk). Being downstream + untargeted, it provably does not affect the
+    # upperarm solve. Hand = WELD (the wrist is held rigid this version; the 2-axis
+    # trackpad wrist comes later -> Hand becomes a driven joint then).
+    ("CC_Base_L_Forearm",   "CC_Base_L_Upperarm",  "ball"),
+    ("CC_Base_L_Hand",      "CC_Base_L_Forearm",   "weld"),
     ("CC_Base_R_Clavicle",  "CC_Base_Spine02",     "weld"),
     ("CC_Base_R_Upperarm",  "CC_Base_R_Clavicle",  "ball"),
-    ("CC_Base_R_Forearm",   "CC_Base_R_Upperarm",  "weld"),  # WELDED (see L_Forearm)
-    ("CC_Base_R_Hand",      "CC_Base_R_Forearm",   "ball"),
+    ("CC_Base_R_Forearm",   "CC_Base_R_Upperarm",  "ball"),   # BALL, world-FK (see L_Forearm)
+    ("CC_Base_R_Hand",      "CC_Base_R_Forearm",   "weld"),
 ]
 
 # tracker role -> bone whose body frame the FrameTask targets
@@ -90,6 +92,23 @@ TRACKER_TO_BONE: dict[str, str] = {
 ELBOW_ORIENT_BONE: dict[str, str] = {
     "elbow_l": "CC_Base_L_Upperarm",
     "elbow_r": "CC_Base_R_Upperarm",
+}
+
+# --- Forearm world-FK from the CONTROLLER (v0.4) -------------------------------
+# The hand controller is held rigidly, so it measures the forearm's WORLD
+# orientation. We do NOT add it to the mink IK; instead, AFTER the solve we set
+# the forearm ball joint directly so the forearm reaches the controller's world
+# orientation EXACTLY. Crucially the local joint angle is computed from the
+# ACTUAL post-solve parent (upperarm) world orientation, so any mink/torso
+# imperfection is absorbed (self-correcting) and there is no cumulative error
+# (absolute per frame, never integrated). role -> (forearm bone, parent upperarm
+# bone). The controller orientation source is the palm role (already read).
+# The 9 cm controller-past-the-wrist offset is irrelevant here: orientation is
+# origin-independent. The wrist tracker stays free for future use; if the
+# controller proves unreliable, swap the source role back to hand_l/r.
+FK_ORIENT_BONE: dict[str, tuple[str, str]] = {
+    "palm_l": ("CC_Base_L_Forearm", "CC_Base_L_Upperarm"),
+    "palm_r": ("CC_Base_R_Forearm", "CC_Base_R_Upperarm"),
 }
 
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
@@ -208,6 +227,8 @@ class RigModel:
     rest_world: dict[str, mathutils.Matrix]  # bone -> armature/world rest matrix
     bodies: list[str] = field(default_factory=list)
     frame_types: dict[str, str] = field(default_factory=dict)  # role -> "body"|"site"
+    # world-FK roles: role -> (forearm mjcf body, parent upperarm mjcf body)
+    fk_orient: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 def _mjcf_name(bone: str) -> str:
@@ -328,6 +349,9 @@ def build_mjcf(arm) -> RigModel:
         tracker_to_body[role] = name_of[bone]
     frame_types = {role: "body" for role in tracker_to_body}
 
+    fk_orient = {role: (name_of[fore], name_of[up])
+                 for role, (fore, up) in FK_ORIENT_BONE.items()}
+
     return RigModel(
         mjcf=mjcf,
         body_to_bone=body_to_bone,
@@ -336,6 +360,7 @@ def build_mjcf(arm) -> RigModel:
         rest_world=rest_world,
         bodies=[name_of[b] for b, _, _ in CHAIN],
         frame_types=frame_types,
+        fk_orient=fk_orient,
     )
 
 
