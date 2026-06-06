@@ -34,10 +34,19 @@ class ManekkoSolver:
         # live.LiveDriver.step. To isolate a misbehaving part, drop its role from
         # this tuple (falls back to position-only for that role).
         orientation_roles: tuple[str, ...] = (
-            # 2026-06-07: chest + hands removed (no longer IK targets). Elbow
-            # roles are position-only (a point gives no orientation, and pinning
-            # upperarm twist would over-constrain — leave it to Posture).
+            # 2026-06-07: chest + hands removed (no longer IK targets). Elbows
+            # are handled separately via orientation_only_roles (below).
             "head", "hip", "foot_l", "foot_r"),
+        # Roles driven by ORIENTATION ONLY (no position target). The elbow
+        # trackers measure the upperarm orientation directly; with no competing
+        # position target on the same ball joint, the upperarm matches the
+        # tracker EXACTLY (the twist that makes "the elbow point up"). See
+        # rig.ELBOW_ORIENT_BONE.
+        orientation_only_roles: tuple[str, ...] = ("elbow_l", "elbow_r"),
+        # High vs position_cost(1.0): a 3-DOF orientation target on a 3-DOF ball
+        # joint has no conflict, so a firm cost makes it near-exact (measured
+        # ~0.01deg error at 5.0). This is the "exact base" the owner requires.
+        orientation_only_cost: float = 5.0,
         # Kept low vs position_cost (1.0): a gentle orientation pull so a slightly
         # off registration can't whip the body around (the owner's "ぐるぐる回る"
         # risk). Raise once head+hip prove stable.
@@ -64,8 +73,11 @@ class ManekkoSolver:
         frame_types = frame_types or {}
         self.frame_tasks: dict[str, mink.FrameTask] = {}
         for role, body in tracker_to_body.items():
-            pc = hand_position_cost if role in hand_roles else position_cost
-            oc = orientation_cost if role in orientation_roles else 0.0
+            if role in orientation_only_roles:
+                pc, oc = 0.0, orientation_only_cost   # exact orientation, no position
+            else:
+                pc = hand_position_cost if role in hand_roles else position_cost
+                oc = orientation_cost if role in orientation_roles else 0.0
             t = mink.FrameTask(
                 frame_name=body,
                 frame_type=frame_types.get(role, "body"),

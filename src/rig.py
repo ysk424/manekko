@@ -70,22 +70,27 @@ TRACKER_TO_BONE: dict[str, str] = {
     #   "chest":   "CC_Base_Spine02",  # repurposed to elbow_l
     # knee trackers stay DROPPED (legs driven by the foot targets; Posture
     # resolves the knee swivel toward the A-pose). knee_r's tracker is now an
-    # elbow (see ELBOW_SITE_BONE).
+    # elbow (see ELBOW_ORIENT_BONE).
     #   "knee_l":  "CC_Base_L_Calf",
 }
 
-# --- Elbow trackers (2026-06-07): targeted as SITES, not body origins ---------
-# The elbow tracker is strapped on the UPPERARM, ~6 cm proximal of the elbow
-# joint. The upperarm bone is 0.30 m, so the tracker sits at ELBOW_SITE_M = 0.24
-# along the upperarm from the shoulder. We add a MuJoCo <site> there and drive it
-# with a position-only FrameTask, so the IK target lands exactly where the puck
-# is (angular gain ~1). The site constrains only the shoulder (Upperarm ball
-# direction); the welded forearm follows at rest. The site name == the role.
-ELBOW_SITE_BONE: dict[str, str] = {
+# --- Elbow trackers (2026-06-07, step 2): ORIENTATION-only on the upperarm -----
+# The elbow tracker is strapped rigidly on the UPPERARM, so it measures the
+# upperarm's WORLD ORIENTATION directly and exactly (all 3 DOF, incl. the TWIST
+# that makes "the elbow point up"). The upperarm is a 3-DOF shoulder ball, so we
+# drive it with an ORIENTATION-ONLY FrameTask on the Upperarm BODY (NO position
+# target). Position-only-on-a-site (v0.3.1) constrained only the direction and
+# left the twist free; adding a soft orientation on top (v0.3.2) fought the
+# position target and gave a compromise (~17deg of 40). Orientation-only on the
+# 3-DOF joint has no competing constraint -> the upperarm matches the tracker
+# EXACTLY (measured: 0.01deg error at cost 5.0). The shoulder POSITION comes from
+# the torso solve (hip + head); the welded forearm follows at rest. The elbow
+# location is then shoulder + exact-upperarm-orientation * length, which is
+# correct. solver puts these roles in `orientation_only_roles`.
+ELBOW_ORIENT_BONE: dict[str, str] = {
     "elbow_l": "CC_Base_L_Upperarm",
     "elbow_r": "CC_Base_R_Upperarm",
 }
-ELBOW_SITE_M = 0.24   # distance from the shoulder along the upperarm to the puck
 
 # hinge axes (elbow/knee) are derived from the rest geometry per-bone below.
 
@@ -255,9 +260,6 @@ def build_mjcf(arm) -> RigModel:
     # + per-limb scalar scales). Each body offset is built from these heads below.
     perf_head = _performer_heads(arm)
 
-    # bone -> elbow site role to emit on that body (inverse of ELBOW_SITE_BONE)
-    _site_on_bone = {bone: role for role, bone in ELBOW_SITE_BONE.items()}
-
     identity = mathutils.Quaternion()  # (1,0,0,0)
 
     def emit_body(bone: str, parent: str | None) -> ET.Element:
@@ -302,16 +304,6 @@ def build_mjcf(arm) -> RigModel:
         else:
             ET.SubElement(body, "geom", type="sphere", size="0.04")
 
-        # elbow tracker site: a point on the upperarm, ELBOW_SITE_M from the
-        # shoulder along the bone, targeted (position-only) by the elbow role.
-        site_role = _site_on_bone.get(bone)
-        if site_role is not None:
-            seg_dir = Rb_inv @ (_world_tail(arm, bone) - head_w)
-            if seg_dir.length > 1e-6:
-                site_pos = seg_dir.normalized() * ELBOW_SITE_M
-                ET.SubElement(body, "site", name=site_role,
-                              pos=_v(site_pos), size="0.02")
-
         for child in children.get(bone, []):
             body.append(emit_body(child, bone))
         return body
@@ -330,11 +322,11 @@ def build_mjcf(arm) -> RigModel:
     mjcf = ET.tostring(mujoco, encoding="unicode")
 
     tracker_to_body = {role: name_of[bone] for role, bone in TRACKER_TO_BONE.items()}
+    # elbow roles target the Upperarm BODY (orientation-only; see solver
+    # orientation_only_roles). All frames are bodies now.
+    for role, bone in ELBOW_ORIENT_BONE.items():
+        tracker_to_body[role] = name_of[bone]
     frame_types = {role: "body" for role in tracker_to_body}
-    # elbow roles target their site (site name == role)
-    for role in ELBOW_SITE_BONE:
-        tracker_to_body[role] = role
-        frame_types[role] = "site"
 
     return RigModel(
         mjcf=mjcf,

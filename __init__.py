@@ -30,31 +30,24 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import WindowManager
 
 
-def _good_mujoco() -> bool:
-    """True if a REAL mujoco package is cached (not an empty namespace shadow)."""
-    m = sys.modules.get("mujoco")
-    return m is not None and getattr(m, "__file__", None) and hasattr(m, "MjModel")
+# The bundled deps that must resolve to ./_libs (never a stray dev copy).
+_BUNDLED_DEPS = ("mujoco", "mink", "openvr")
 
 
 def _ensure_wheels() -> None:
     """Guarantee the bundled deps are importable, independent of Blender's wheel
     system (which does not surface them here). Extracts ./wheels/*.whl into
-    ./_libs once (excluding numpy, never bundled) and prepends it to sys.path.
+    ./_libs once (excluding numpy, never bundled) and forces ./_libs to the FRONT
+    of sys.path so the bundled packages always win.
 
-    Hardened (v0.3.1) against a NAMESPACE-PACKAGE SHADOW: if a directory named
-    ``mujoco`` WITHOUT ``__init__.py`` is on sys.path first (e.g. the dev-loop
-    ``Temp\\manekko_libs`` from CLAUDE.md), ``import mujoco`` caches an empty
-    namespace package (no ``__file__`` / no ``MjModel``) and every later import
-    returns that broken object -> ``module 'mujoco' has no attribute 'MjModel'``.
-    So we force ``_libs`` to the FRONT of sys.path and purge any broken
-    mujoco/mink cache before importing."""
-    if _good_mujoco():
-        try:
-            import openvr  # noqa: F401
-            return
-        except Exception:
-            pass
-
+    Hardened (v0.3.4) against DEV-PATH SHADOWS: the dev-loop / MCP
+    ``Temp\\manekko_libs`` (CLAUDE.md) may be on sys.path with a PARTIAL copy of a
+    dep — a ``mujoco`` dir without ``__init__.py`` (a namespace package: no
+    ``__file__`` / no ``MjModel``), or an ``openvr`` missing ``version.py``
+    (``ModuleNotFoundError: No module named 'openvr.version'``). Either shadows
+    the good ``_libs`` copy. So we (1) force ``_libs`` first, (2) purge any cached
+    dep NOT loaded from ``_libs`` so it re-imports cleanly, and (3) invalidate the
+    import finder caches after the sys.path change."""
     here = os.path.dirname(__file__)
     wheels_dir = os.path.join(here, "wheels")
     libs = os.path.join(here, "_libs")
@@ -72,18 +65,22 @@ def _ensure_wheels() -> None:
             with open(marker, "w") as f:
                 f.write("ok\n")
 
-    # _libs must be FIRST so the real package wins over any stray dev path.
+    # _libs must be FIRST so the bundled packages win over any stray dev path.
     if libs in sys.path:
         sys.path.remove(libs)
     sys.path.insert(0, libs)
 
-    # Purge a broken (namespace) mujoco shadow + its dependents so the real
-    # package under _libs is imported fresh.
-    if not _good_mujoco():
-        for name in [n for n in list(sys.modules)
-                     if n == "mujoco" or n.startswith("mujoco.")
-                     or n == "mink" or n.startswith("mink.")]:
-            del sys.modules[name]
+    # Purge any cached dep NOT loaded from _libs (a partial/namespace dev copy)
+    # plus its submodules, so the next import resolves cleanly to _libs.
+    import importlib
+    for pkg in _BUNDLED_DEPS:
+        m = sys.modules.get(pkg)
+        f = getattr(m, "__file__", None) or ""
+        if m is not None and not f.startswith(libs):
+            for name in [n for n in list(sys.modules)
+                         if n == pkg or n.startswith(pkg + ".")]:
+                del sys.modules[name]
+    importlib.invalidate_caches()
 
 
 _ensure_wheels()
