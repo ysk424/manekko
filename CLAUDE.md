@@ -5,7 +5,30 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
-## ⚠️ START HERE — 2026-06-07（v0.3.1 ＝肘トラッカー導入・**実機未検証・要オーナー確認**）
+## ⚠️ START HERE — 2026-06-07（v0.4.0 ＝コントローラで前腕ワールドFK・**実機検証済み**）
+
+**いまの状態**: `dist/manekko-0.4.0.zip` ＝**実機検証済み・commit/push 済み**。腕が肘トラッカー＋
+コントローラで動く。0.3.4 は 0.3系最終版（フォールバック）。
+
+**腕の最終アーキテクチャ（0.3〜0.4 で確立。重要）**:
+- **上腕の向き＝肘トラッカー**（上腕に装着）。mink の **orientation-only 目標**を Upperarm ボディに
+  cost=5.0 で（位置目標なし＝競合ゼロ）→ 誤差~0.01°で厳密一致。捻りも入る。`rig.ELBOW_ORIENT_BONE`、
+  `solver.orientation_only_roles`/`orientation_only_cost`。
+- **前腕の向き＝コントローラ**（手持ち）。**mink の後にワールドFK**で直接駆動（mink再実行なし）。
+  `live._apply_forearm_fk`: solve後に**実際の上腕ワールド向きを読み** `q_fore = rel_rest^T·R_up_actual^T·
+  R_fore_target` を前腕ボール qpos に直書き。毎フレーム絶対値＝累積誤差ゼロ、実parent参照＝mink誤差を自己補正。
+- **前腕＝ball（mink非ターゲット）／手＝weld（手首剛体）**。手首は**将来トラックパッドで2軸**（Hand を駆動関節化）。
+  プレイ中は手首を曲げない運用。**手首トラッカーは空き**（コントローラが不調なら FK source を hand_l/r に戻す）。
+- マウントオフセットは**A-pose の Calibrate 1回**で肘もコントローラも登録（`rig.FK_ORIENT_BONE`/`RigModel.fk_orient`、
+  `live.body_rest_orientations` が palm=前腕rest を追加）。**別キャリブ不要・mink再実行不要**（オーナー合意の設計）。
+- **不変条件**: 手/前腕に mink タスクを付けない（付けると上腕と結合し、上腕の厳密性が崩れる）。前腕は下流＋
+  非ターゲットなので QP 目的関数が分離し、上腕解は前腕の有無で不変（実機前に証明済み）。
+
+**次の課題（未着手）**: トラックパッドで手首2軸。手首トラッカーの再配置先の検討。
+
+---
+
+## START HERE — 2026-06-07（v0.3.1 ＝肘トラッカー導入・旧）
 
 **いまの状態**: `dist/manekko-0.3.1.zip` ビルド済み・**未実機テスト**（オーナーが install→Start で確認）。
 0.2.4 zip は検証済みフォールバックとして残置。MJCF生成・site配置・XML妥当性は Blender MCP で確認済み。
