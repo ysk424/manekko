@@ -74,9 +74,10 @@ def rest_channel_values(arm, driver, fcurves) -> dict:
     from . import apply as _apply
 
     driver.solver.reset_to_rest()
-    _apply.apply_pose(arm, driver.rm, driver.solver.configuration,
-                      fingers={"hand_l": 0.0, "hand_r": 0.0},
-                      finger_names=driver.finger_names)
+    # No wrist arg -> the Hand bone is left at its rest (weld) pose, which is the
+    # correct rest value for the front ramp (the wrist is driven by the trackpad
+    # live, but its rest is palm-down neutral). Fingers are no longer driven here.
+    _apply.apply_pose(arm, driver.rm, driver.solver.configuration)
     bpy.context.view_layer.update()
 
     out: dict = {}

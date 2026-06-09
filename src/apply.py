@@ -38,62 +38,62 @@ import mujoco
 ROOT_HEIGHT_SCALE = 1.0
 
 
-# --- Finger grip/extend (v0.1.1) -------------------------------------------
-# Fingers are NOT part of the IK chain; they are driven directly by the
-# controller trigger (analog 0..1) as a curl blend: rest (open) at 0, fist at 1.
-# Every finger descendant of the hand bone is curled about one local euler axis
-# by trigger * FINGER_CURL_ANGLE. Axis/sign are rig-specific — if a hand opens
-# backwards or splays instead of making a fist, flip the sign or change the axis
-# (tune live; same "experiment & adjust" approach as the other knobs).
-FINGER_CURL_ANGLE = 1.2          # radians at full grip (~69 deg per joint)
-# Curl DIRECTION per hand and per finger group (degrees), found live on this rig
-# by sweeping the (now removed) N-panel field and watching each group. The curl
-# axis lies in the bone-local X-Z plane (perpendicular to the bone length, which
-# is local Y) at this angle -> axis = (cos, 0, sin). The thumb curls differently
-# from the other four fingers, and L/R mirror (R = 360 - L for each group). The
-# flexion axis can't be auto-derived from straight rest fingers (degenerate),
-# so these are tuned constants — change them to re-tune for a different rig.
-FINGER_CURL_DIR_DEG = {
-    "hand_l": {"thumb": 200.0, "other": 270.0},
-    "hand_r": {"thumb": 160.0, "other": 90.0},
-}
+# --- Wrist 2-axis from the trackpad (v0.5.0) -------------------------------
+# Fingers are NO LONGER driven here: the sibling app *manecam* (AI-server finger
+# capture) owns the fingers, so manekko stops sending any finger angles and the
+# controller trigger is unused. Instead the controller TRACKPAD drives the WRIST.
+#
+# The wrist is NOT an IK target and the Hand body stays a WELD in the MuJoCo rig
+# (rig.CHAIN). We drive the Hand BONE directly: after the solve, apply a 2-axis
+# rotation to the Hand pose bone. The wrist has two DOF, defined from the palm-down
+# rest pose:
+#   * FLEX      = up/down  (palmar/dorsi flexion)
+#   * DEVIATION = inner/outer, toward/away from the BODY CENTER (radial/ulnar)
+#
+# IMPORTANT: the pad geometry (brain<->hardware swap) and the L/R deviation mirror
+# are done at ACQUISITION (ops._wrist_from_ctrl), which hands us (flex, dev) ALREADY
+# in wrist semantics (each -1..1, 0 = rest, + = up / + = inner). So this function
+# only maps those two scalars onto the Hand bone's local rotation axes. The two
+# LOCAL axes (which Hand-bone axis is flex vs deviation) and the global up/inner
+# sense are rig-specific -> TUNE LIVE: flip WRIST_FLEX_AXIS/WRIST_FLEX_SIGN if
+# up/down is inverted, WRIST_DEV_AXIS/WRIST_DEV_SIGN if inner/outer is inverted
+# (these flip BOTH hands together; the per-hand mirror lives in ops). Same
+# "experiment & adjust" approach as the elbow / the old finger curl.
+WRIST_BONE = {"hand_l": "CC_Base_L_Hand", "hand_r": "CC_Base_R_Hand"}
+WRIST_RANGE_DEG = 45.0           # deflection (deg) at full pad (|component| = 1)
+WRIST_FLEX_AXIS = (1.0, 0.0, 0.0)   # Hand-local axis for up(+)/down(-) flexion
+WRIST_DEV_AXIS = (0.0, 0.0, 1.0)    # Hand-local axis for inner(+)/outer(-) deviation
+WRIST_FLEX_SIGN = +1.0              # flip if up/down inverted on hardware (both hands)
+WRIST_DEV_SIGN = +1.0               # flip if inner/outer inverted on hardware (both hands)
 
 
-def finger_bone_names(arm) -> dict[str, list[str]]:
-    """Per hand role -> list of finger bone names (all descendants of the hand
-    bone, naming-agnostic so it survives CC finger-name variants). Cache once."""
-    out: dict[str, list[str]] = {}
-    for side, role in (("L", "hand_l"), ("R", "hand_r")):
-        hb = arm.data.bones.get(f"CC_Base_{side}_Hand")
-        out[role] = [b.name for b in hb.children_recursive] if hb else []
-    return out
-
-
-def _apply_finger_curl(arm, curls, finger_names) -> None:
-    """curls: hand role -> trigger 0..1. Curls each finger bone about the local
-    X-Z-plane axis at FINGER_CURL_DIR_DEG[role][group] by trigger *
-    FINGER_CURL_ANGLE (0 = rest/open), where group is 'thumb' for thumb bones
-    and 'other' for the rest. Only hands present in `curls` are touched."""
+def _apply_wrist(arm, wrist) -> None:
+    """wrist: hand role -> (flex, dev), each -1..1 (0 = rest). The brain<->pad
+    swap and the L/R mirror were already applied at acquisition
+    (ops._wrist_from_ctrl); here flex rotates the Hand bone about WRIST_FLEX_AXIS
+    and dev about WRIST_DEV_AXIS, by value * WRIST_RANGE_DEG, with the global
+    per-DOF sign knobs (to fix a wrong-way bone axis). Only hands present in
+    `wrist` are touched; absent hands keep the rest pose set by the weld branch of
+    apply_pose."""
     import math
     import mathutils
     pbones = arm.pose.bones
-    for role, t in curls.items():
-        dirs = FINGER_CURL_DIR_DEG.get(role)
-        if dirs is None:
+    rng = math.radians(WRIST_RANGE_DEG)
+    flex_axis = mathutils.Vector(WRIST_FLEX_AXIS)
+    dev_axis = mathutils.Vector(WRIST_DEV_AXIS)
+    for role, val in wrist.items():
+        bone = WRIST_BONE.get(role)
+        if bone is None:
             continue
-        t = float(t)
-        eul = {}
-        for group, deg in dirs.items():
-            th = math.radians(deg)
-            axis = mathutils.Vector((math.cos(th), 0.0, math.sin(th)))
-            eul[group] = mathutils.Quaternion(
-                axis, t * FINGER_CURL_ANGLE).to_euler("XYZ")
-        for bn in finger_names.get(role, ()):
-            pb = pbones.get(bn)
-            if pb is None:
-                continue
-            pb.rotation_mode = "XYZ"
-            pb.rotation_euler = eul["thumb"] if "Thumb" in bn else eul["other"]
+        pb = pbones.get(bone)
+        if pb is None:
+            continue
+        flex = WRIST_FLEX_SIGN * float(val[0])   # up(+)/down(-), already wrist-semantic
+        dev = WRIST_DEV_SIGN * float(val[1])     # inner(+)/outer(-), already wrist-semantic
+        q = (mathutils.Quaternion(flex_axis, rng * flex)
+             @ mathutils.Quaternion(dev_axis, rng * dev))
+        pb.rotation_mode = "XYZ"
+        pb.rotation_euler = q.to_euler("XYZ")
 
 
 def _apply_body_table(rm, model):
@@ -126,8 +126,7 @@ def _apply_body_table(rm, model):
     return table
 
 
-def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
-               view_layer=None) -> None:
+def apply_pose(arm, rm, configuration, *, wrist=None, view_layer=None) -> None:
     import bpy
     if view_layer is None:
         view_layer = bpy.context.view_layer
@@ -178,7 +177,7 @@ def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = mathutils.Quaternion(axis, angle).to_euler("XYZ")
 
-    if fingers and finger_names:
-        _apply_finger_curl(arm, fingers, finger_names)
+    if wrist:
+        _apply_wrist(arm, wrist)
 
     view_layer.update()

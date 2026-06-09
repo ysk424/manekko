@@ -49,8 +49,6 @@ class LiveDriver:
         self.calibration: _ovr.Calibration | None = None
         self.last_q: np.ndarray | None = None
         self.last_error: str | None = None
-        # finger bones per hand (driven by the controller trigger, not the IK)
-        self.finger_names = _apply.finger_bone_names(arm)
 
     # -- world-FK (forearm from the controller, post-IK) ----------------
     def _build_fk_tables(self) -> dict:
@@ -144,7 +142,7 @@ class LiveDriver:
     # -- per-frame step -------------------------------------------------
     def step(self, snapshot: dict[str, np.ndarray] | None = None,
              snapshot_rot: dict[str, np.ndarray] | None = None,
-             grip: dict[str, float] | None = None,
+             wrist: dict[str, tuple[float, float]] | None = None,
              *, dt: float = 1.0 / 60.0, iters: int = 4):
         """One solve+apply tick. Returns True on success, False if held.
 
@@ -177,7 +175,7 @@ class LiveDriver:
             self._apply_forearm_fk(orientations)
 
         _apply.apply_pose(self.arm, self.rm, self.solver.configuration,
-                          fingers=grip, finger_names=self.finger_names)
+                          wrist=wrist)
         return True
 
     def apply_rest(self):

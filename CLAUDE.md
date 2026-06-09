@@ -5,7 +5,48 @@ Communication is Japanese. Owner: `azoo` / `ysk424` (ysk424@hotmail.com).
 
 ---
 
-## ⚠️ START HERE — 2026-06-10（v0.4.2 ＝速度最適化その①・**未実機テスト**）
+## ⚠️ START HERE — 2026-06-10（v0.5.3 ＝指の駆動を全廃＋手首をトラックパッドで2軸・**実機検証済み・完成**）
+
+**いまの状態**: `dist/manekko-0.5.3.zip` ＝**実機検証済み・完成・commit/push 済み**。指は manekko から出さず
+（manecam 担当）、手首が左右トラックパッドで2軸（上下＝屈曲・左右＝内外）動く。0.4.1 zip はフォールバックとして残置。
+**末尾の数字＝ビルド番号**（同一版を作り直したら必ず上げる＝install 時に更新されたか分かるように。0.5.0 は二度
+ビルドして判別不能になった反省）。**ここで一区切り。**
+
+**実機での手首チューニング結果（0.5.1→0.5.3、確定値）**: ①取得した pad の **X↔Y を入替**（`ops._wrist_from_ctrl`
+の round-1 swap）。②**右手だけコントローラ水平(X=rAxis0.x)を符号反転**＝`ops.WRIST_HSIGN`={hand_l:+1, hand_r:−1}。
+左手は終始 OK。これで左右とも意図どおり動いた。`WRIST_SIDE_SIGN`={hand_l:+1, hand_r:−1} は据え置き。
+
+**設計思想（オーナー方針・最重要）**: 兄弟ソフトと役割分担する。`../niramekko`＝ARKit フェイス（別物・本リポ対象外）。
+`../manecam`＝**AIサーバのフィンガーキャプチャ＝指はきれいに取れる**。よって **manekko は指に一切角度を送らない**
+（manecam の得意分野だから）。ただし **手首は manecam では実用レベルに取れない**（理論上は可だが使えない）ので
+manekko が担当する。**トリガーの使用をやめ、手首を左右トラックパッドで動かす**。手首は「掌を下に向けたレスト姿勢」
+から**上下・左右の2軸**（左パッド→左手首、右パッド→右手首）。
+
+**何を変えたか（v0.5.0）**:
+- **指の駆動を全廃**: `apply.FINGER_CURL_*`／`finger_bone_names`／`_apply_finger_curl` を削除。`live` の
+  `finger_names`、`ops._grip_from_ctrl`、`_keyframe` の指キーフレーム、`postproc` の fingers 引数も除去。
+- **手首2軸（トラックパッド）を追加**: Hand は MuJoCo では**weld のまま**（IK を乱さない）。solve 後に Hand
+  **ボーンへ直接**2軸回転を焼く＝`apply._apply_wrist`。入力は `ops._wrist_from_ctrl`＝トラックパッド
+  `axes[0]`(x,y, -1..1, 未タッチ=0=レスト)。`live.step` の引数 `grip`→`wrist`。Hand は `rm.bodies` の1つなので
+  録画キーは body ループで自動取得（rotation_euler）。
+- **座標変換は取得側に集約（0.5.1・オーナー提案）**: 脳内↔ハードの入替と左右ミラーを **`ops._wrist_from_ctrl`**
+  で生変数に取り込んでから (flex, dev) に組み立て、apply は (flex, dev) をボーンに回すだけに分離。手首2DOF＝
+  **屈曲（上下）**＋**偏角（内外＝体の中心方向）**。生pad: `pad_x`=rAxis0.x(右+)、`pad_y`=rAxis0.y(上+)。脳内系は
+  入替（脳内X=縦=pad_y, 脳内Y=横=pad_x, 符号反転なし）。組み立て: **flex=pad_y（上+）**、**dev=pad_x×SIDE_SIGN**
+  （`ops.WRIST_SIDE_SIGN`={hand_l:+1, hand_r:−1}＝左右ミラー：体の中心が左手の右・右手の左）。
+- **実機調整ノブ**（肘・旧指と同じ「実験して合わせる」）: 上下が逆→`apply.WRIST_FLEX_SIGN`/`WRIST_FLEX_AXIS`
+  （両手共通）、内外が両手とも逆→`apply.WRIST_DEV_SIGN`/`WRIST_DEV_AXIS`（両手共通）、**片手だけ内外が逆→
+  `ops.WRIST_SIDE_SIGN` の該当手を反転**、可動域→`apply.WRIST_RANGE_DEG=45°`。トリガーは未使用。
+  **実機確定**: round-1 で pad の X↔Y を入替（`ops._wrist_from_ctrl`）、round-2 で右手のみ水平を反転
+  （`ops.WRIST_HSIGN`）。`apply.WRIST_*`（局所軸・可動域45°）は既定のまま OK だった。
+
+**次にやること（未着手・休眠）**: 手首2軸まで完成＝**当面の機能は出そろった**。次の起動はバグ修正か新機能の指示時。
+余力テーマ: 速度最適化の続き（#3 毎フレームの rotation_mode/指スキップ→指は消えたので一部不要・view_layer.update
+粒度、#6 solve のワーカースレッド化）。フェイスは別プロジェクト（niramekko）、指は manecam ＝本リポ対象外。
+
+---
+
+## ⚠️ START HERE — 2026-06-10（v0.4.2 ＝速度最適化その①・**実機未確認・旧**）
 
 **いまの状態**: `dist/manekko-0.4.2.zip` ビルド済み・**未実機テスト**（オーナーが install→Start で確認予定）。
 0.4.1 zip は検証済みフォールバックとして残置。機能は 0.4.1 から不変（最適化のみ・出力ポーズは同一のはず）。

@@ -45,8 +45,10 @@ CHAIN: list[tuple[str, str | None, str]] = [
     # parks it near rest; AFTER the solve we OVERWRITE its qpos directly from the
     # controller's world orientation (world-FK; see FK_ORIENT_BONE + live._apply_
     # forearm_fk). Being downstream + untargeted, it provably does not affect the
-    # upperarm solve. Hand = WELD (the wrist is held rigid this version; the 2-axis
-    # trackpad wrist comes later -> Hand becomes a driven joint then).
+    # upperarm solve. Hand = WELD here in the MuJoCo rig, but v0.5.0 drives the
+    # WRIST directly on the Hand BONE from the controller trackpad, AFTER the solve
+    # (apply._apply_wrist) -- a 2-axis local rotation, not an IK joint. Keeping it a
+    # weld in the solve means the wrist never perturbs the arm IK.
     ("CC_Base_L_Forearm",   "CC_Base_L_Upperarm",  "ball"),
     ("CC_Base_L_Hand",      "CC_Base_L_Forearm",   "weld"),
     ("CC_Base_R_Clavicle",  "CC_Base_Spine02",     "weld"),

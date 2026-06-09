@@ -15,8 +15,8 @@ not block the extension and it is NOT why the Add-ons UI lacks an uninstall
 button (removing the sys.path use in v0.1.3 cleared the warning but the uninstall
 button was still absent — unrelated). Uninstall by deleting the install folder.
 
-N-panel "Manekko" (3D View sidebar): Start/Stop, Record, Calibrate, plus a
-"Finger curl dir" field. See src/ops.py.
+N-panel "Manekko" (3D View sidebar): Start/Stop, Record, Calibrate. See
+src/ops.py.
 """
 from __future__ import annotations
 

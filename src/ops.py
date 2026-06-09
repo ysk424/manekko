@@ -217,14 +217,42 @@ class MANEKKO_OT_start(bpy.types.Operator):
             }
         return out
 
-    def _grip_from_ctrl(self, ctrl):
-        """Controller trigger (axis1.x, 0..1) -> per-hand finger curl. Maps the
-        palm controller to the same-side hand."""
+    # Wrist deviation mirror: "inner" (toward the body center) is pad-RIGHT for the
+    # left hand but pad-LEFT for the right hand (the body center is to the right of
+    # the left hand, to the left of the right hand). +1 keeps pad_x sign, -1 flips.
+    # Flip an entry here if a hand's inner/outer comes out swapped relative to the
+    # other; flip apply.WRIST_DEV_SIGN if BOTH hands are inner/outer-inverted.
+    WRIST_SIDE_SIGN = {"hand_l": +1.0, "hand_r": -1.0}
+
+    # Round-2 sign (2026-06-10): per-hand sign on the controller HORIZONTAL axis
+    # (raw pad X = rAxis0.x). On hardware the LEFT hand was correct and the RIGHT
+    # hand's horizontal came out inverted -> flip the right hand only.
+    WRIST_HSIGN = {"hand_l": +1.0, "hand_r": -1.0}
+
+    def _wrist_from_ctrl(self, ctrl):
+        """Controller TRACKPAD -> per-hand wrist input (flex, dev), each -1..1, 0
+        at rest (untouched pad). Maps the palm controller to the same-side hand.
+        (v0.5.0: replaces the trigger->finger curl; fingers now come from manecam,
+        the wrist is driven here from the trackpad.)
+
+        Owner's pad model (2026-06-10): the brain frame is SWAPPED vs hardware.
+        Raw pad: pad_x = rAxis0.x (right +), pad_y = rAxis0.y (up +). We capture
+        each raw component into its own variable, then build the wrist-semantic
+        pair HERE so apply only has to rotate the bone:
+          flex = pad_y                       # brain X = vertical   -> up(+)/down(-)
+          dev  = pad_x * WRIST_SIDE_SIGN[h]   # brain Y = horizontal -> inner(+)/outer(-)
+        """
         out = {}
         for palm, hand in (("palm_l", "hand_l"), ("palm_r", "hand_r")):
             d = ctrl.get(palm)
-            if d and "axes" in d:
-                out[hand] = max(0.0, min(1.0, float(d["axes"][1][0])))
+            if not (d and "axes" in d):
+                continue
+            pad_x, pad_y = d["axes"][0]          # raw pad: pad_x = horizontal (X), pad_y = vertical (Y)
+            pad_x *= self.WRIST_HSIGN[hand]      # ROUND 2 (2026-06-10): flip controller horizontal (X) sign per hand (right flipped; left OK)
+            pad_x, pad_y = pad_y, pad_x          # ROUND 1: swap X<->Y (horizontal drives flex, vertical drives dev)
+            flex = float(pad_y)                  # post-swap pad_y = controller horizontal -> up/down (flex)
+            dev = float(pad_x) * self.WRIST_SIDE_SIGN[hand]   # post-swap pad_x = controller vertical -> inner/outer (mirrored)
+            out[hand] = (flex, dev)
         return out
 
     # -- recording ------------------------------------------------------
@@ -238,12 +266,8 @@ class MANEKKO_OT_start(bpy.types.Operator):
                 pb.keyframe_insert("rotation_quaternion", frame=frame)
             else:
                 pb.keyframe_insert("rotation_euler", frame=frame)
-        # finger bones (trigger-driven curl, rotation_euler) — capture the grip too
-        for names in self.driver.finger_names.values():
-            for bn in names:
-                pb = arm.pose.bones.get(bn)
-                if pb is not None:
-                    pb.keyframe_insert("rotation_euler", frame=frame)
+        # The wrist (Hand bone) is driven from the trackpad and is already one of
+        # rm.bodies, so it is keyframed by the loop above (rotation_euler).
 
     # -- modal loop -----------------------------------------------------
     def modal(self, context, event):
@@ -283,8 +307,8 @@ class MANEKKO_OT_start(bpy.types.Operator):
             else:
                 snap = self._drive_snapshot(valid)
                 if snap:
-                    grip = self._grip_from_ctrl(_S["ctrl"])
-                    self.driver.step(snap, valid_rot, grip, iters=4)
+                    wrist = self._wrist_from_ctrl(_S["ctrl"])
+                    self.driver.step(snap, valid_rot, wrist, iters=4)
                     if _S["recording"]:
                         self._keyframe(context)
                         context.scene.frame_set(context.scene.frame_current + 1)
