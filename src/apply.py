@@ -96,6 +96,36 @@ def _apply_finger_curl(arm, curls, finger_names) -> None:
             pb.rotation_euler = eul["thumb"] if "Thumb" in bn else eul["other"]
 
 
+def _apply_body_table(rm, model):
+    """Precompute the per-body data the per-frame apply loop needs, so each
+    tick avoids ``mj_name2id`` + the MuJoCo model array reads (body_jntnum /
+    body_jntadr / jnt_type / jnt_qposadr / jnt_axis). Built once and cached on
+    ``rm`` (``._apply_table``); rm and its model are created together in
+    LiveDriver.__init__ and never rebuilt independently, so it can't go stale.
+
+    Each entry is ``(bone_name, jtype, qpos_adr, hinge_axis)`` where ``jtype``
+    is ``None`` for a weld (no DOF) and ``hinge_axis`` is a precomputed
+    ``mathutils.Vector`` for hinges (``None`` otherwise)."""
+    table = []
+    for body in rm.bodies:
+        bone = rm.body_to_bone[body]
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+        if model.body_jntnum[bid] == 0:
+            table.append((bone, None, 0, None))   # weld: no DOF
+            continue
+        jid = int(model.body_jntadr[bid])
+        jtype = model.jnt_type[jid]
+        adr = int(model.jnt_qposadr[jid])
+        axis = None
+        if jtype == mujoco.mjtJoint.mjJNT_HINGE:
+            axis = mathutils.Vector((
+                float(model.jnt_axis[jid][0]),
+                float(model.jnt_axis[jid][1]),
+                float(model.jnt_axis[jid][2])))
+        table.append((bone, jtype, adr, axis))
+    return table
+
+
 def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
                view_layer=None) -> None:
     import bpy
@@ -108,22 +138,21 @@ def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
     mw_inv = arm.matrix_world.inverted()
     pbones = arm.pose.bones
 
-    for body in rm.bodies:
-        bone = rm.body_to_bone[body]
-        pb = pbones[bone]
-        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+    table = getattr(rm, "_apply_table", None)
+    if table is None:
+        table = _apply_body_table(rm, model)
+        rm._apply_table = table
 
-        if model.body_jntnum[bid] == 0:
+    for bone, jtype, adr, axis in table:
+        pb = pbones[bone]
+
+        if jtype is None:
             # weld: no DOF — follows its parent rigidly, so its local
             # displacement from rest is zero. Reset the basis (clears any stale
             # pose) rather than skipping; a leftover rotation here would
             # otherwise propagate down the whole chain (e.g. clavicle -> arm).
             pb.matrix_basis = mathutils.Matrix.Identity(4)
             continue
-
-        jid = int(model.body_jntadr[bid])
-        jtype = model.jnt_type[jid]
-        adr = int(model.jnt_qposadr[jid])
 
         if jtype == mujoco.mjtJoint.mjJNT_FREE:
             # Root: the one allowed position transfer. Set the bone's GLOBAL
@@ -146,8 +175,6 @@ def apply_pose(arm, rm, configuration, *, fingers=None, finger_names=None,
             pb.rotation_euler = q.to_euler("XYZ")
         elif jtype == mujoco.mjtJoint.mjJNT_HINGE:
             angle = float(qpos[adr])
-            axis = mathutils.Vector((
-                model.jnt_axis[jid][0], model.jnt_axis[jid][1], model.jnt_axis[jid][2]))
             pb.rotation_mode = "XYZ"
             pb.rotation_euler = mathutils.Quaternion(axis, angle).to_euler("XYZ")
 
