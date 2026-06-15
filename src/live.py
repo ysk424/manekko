@@ -33,6 +33,25 @@ except ImportError:  # dev loop: src/*.py loaded standalone via importlib
     _ovr = sys.modules["manekko_openvr"]
 
 
+# Hip synthesis (v0.5.4 — GO/NOGO test, "HTC-style trackerless waist"). With the
+# waist tracker removed (one tracker freed for a future wrist puck), the hip ROOT
+# is ESTIMATED from the two thigh trackers instead of measured:
+#   * position  = midpoint(knee_l, knee_r). The pelvis center ~ the midpoint of
+#     the two hip joints, and the thigh trackers sit just below them, so the
+#     constant offset to the true pelvis center is absorbed by the A-pose
+#     Calibration (same trick as the foot 10 cm offset / bone offsets).
+#   * orientation = a body-attached pelvis frame: lateral axis from the thigh
+#     line (knee_r - knee_l), up axis from hip->head. Without this the root yaw
+#     is unconstrained (it would drift / pin to identity at orientation_cost) and
+#     the body could not turn — that would be a confound, not a hip-removal
+#     result, so we synthesize yaw to keep the test clean.
+# If a REAL "hip" tracker is present it wins and synthesis is skipped (fallback).
+# Known weakness this test exists to measure: asymmetric leg poses (single-leg
+# stance, deep lunge) drag the midpoint toward the moving leg, so the pelvis
+# estimate wanders. Flip this off to restore the waist-tracker config.
+SYNTH_HIP_FROM_THIGHS = True
+
+
 class LiveDriver:
     def __init__(self, arm, *, reader=None, solver_kwargs: dict | None = None):
         self.arm = arm
@@ -121,6 +140,38 @@ class LiveDriver:
             out[role] = np.array(data.xmat[bid]).reshape(3, 3)
         return out
 
+    # -- hip synthesis (trackerless waist) ------------------------------
+    def _synth_hip(self, snapshot, snapshot_rot):
+        """Inject an estimated ``hip`` pose built from the two thigh trackers
+        when no real waist tracker reports. See SYNTH_HIP_FROM_THIGHS. Returns
+        (snapshot, snapshot_rot), possibly augmented (never mutates the inputs)."""
+        if not SYNTH_HIP_FROM_THIGHS or "hip" in snapshot:
+            return snapshot, snapshot_rot
+        kl, kr = snapshot.get("knee_l"), snapshot.get("knee_r")
+        if kl is None or kr is None:
+            return snapshot, snapshot_rot
+        kl = np.asarray(kl, float)
+        kr = np.asarray(kr, float)
+        hip_pos = 0.5 * (kl + kr)
+        snapshot = {**snapshot, "hip": hip_pos}
+
+        head = snapshot.get("head")
+        if snapshot_rot is not None and head is not None:
+            right = kr - kl                       # pelvis lateral axis (turns with hips)
+            up = np.asarray(head, float) - hip_pos  # pelvis up axis
+            nr, nu = np.linalg.norm(right), np.linalg.norm(up)
+            if nr > 1e-6 and nu > 1e-6:
+                right /= nr
+                up /= nu
+                fwd = np.cross(up, right)
+                nf = np.linalg.norm(fwd)
+                if nf > 1e-6:
+                    fwd /= nf
+                    right = np.cross(fwd, up)     # re-orthonormalize
+                    R = np.column_stack((right, fwd, up))
+                    snapshot_rot = {**snapshot_rot, "hip": R}
+        return snapshot, snapshot_rot
+
     # -- calibration ----------------------------------------------------
     def calibrate(self, snapshot: dict[str, np.ndarray] | None = None,
                   snapshot_rot: dict[str, np.ndarray] | None = None) -> _ovr.Calibration:
@@ -133,6 +184,7 @@ class LiveDriver:
         """
         if snapshot is None:
             snapshot = self.reader.snapshot()
+        snapshot, snapshot_rot = self._synth_hip(snapshot, snapshot_rot)
         rest = self.body_rest_positions()
         rest_rot = self.body_rest_orientations()
         self.calibration = _ovr.Calibration.from_apose(
@@ -153,6 +205,7 @@ class LiveDriver:
             snapshot = self.reader.snapshot()
         if not snapshot:
             return False
+        snapshot, snapshot_rot = self._synth_hip(snapshot, snapshot_rot)
 
         if self.calibration is not None:
             targets = self.calibration.apply(snapshot)
